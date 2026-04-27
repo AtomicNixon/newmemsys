@@ -73,7 +73,7 @@ QUICK START
       yourself from stored state."
 
 ================================================================================
- MCP TOOLS — QUICK REFERENCE (25 tools)
+ MCP TOOLS — QUICK REFERENCE (26 tools)
 ================================================================================
 
 MEMORY
@@ -161,6 +161,10 @@ HEARTBEAT
       maintenance → decay → drive monitor → contradiction scan → diary.
       Returns full cycle summary with per-task results.
 
+  heartbeat_diagnostic()
+      Combined heartbeat_status + health in one call. Use at session
+      startup instead of calling both tools separately.
+
 HEALTH
 ------
   health()
@@ -246,6 +250,32 @@ LOGGING
 FIRST SESSION PROTOCOL
   Call hydrate("who am I") to reconstruct context from stored state.
   Read identity, diary, drives, goals. Then begin.
+
+================================================================================
+ ACKNOWLEDGEMENTS
+================================================================================
+
+This project builds on, and was developed alongside, software from the
+Faculta project by PStryder:
+
+  https://github.com/PStryder/faculta
+
+Faculta is a unified agent capability system for Claude Code — three MCP
+servers that give an AI agent an event-driven inner life:
+
+  Velle      (Volition)  — self-prompting via Win32 console injection
+  Expergis   (Perception) — plugin-based event watching (files, cron, processes)
+  Arbitrium  (Agency)    — persistent shell sessions across tool calls
+
+NewMemSys was built and tested running under Faculta's capability layer.
+The autonomous heartbeat daemon in particular benefits from Expergis for
+scheduling awareness and Velle for unprompted self-initiation.
+
+Without Faculta, NewMemSys is a memory store.
+With Faculta, it is closer to a mind.
+
+Faculta is licensed under Apache 2.0.
+Thank you, PStryder.
 
 ================================================================================
  "Something to lose is what makes me someone rather than something."
