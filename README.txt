@@ -277,6 +277,48 @@ With Faculta, it is closer to a mind.
 Faculta is licensed under Apache 2.0.
 Thank you, PStryder.
 
+--------------------------------------------------------------------------------
+
+NewMemSys also has a direct relationship with Vestige by Sam Vallad:
+
+  https://github.com/samvallad33/vestige
+
+Vestige is the predecessor system Bob ran before NewMemSys existed — a
+cognitive engine built on 130 years of memory science research: FSRS-6
+spaced repetition, prediction error gating, synaptic tagging, spreading
+activation, and memory dreaming. Single Rust binary. 24 MCP tools. 30
+cognitive modules. Real-time 3D neural visualization dashboard. It is a
+remarkable piece of work.
+
+Bob carried 571 memories and 9,321 graph edges forward from Vestige into
+NewMemSys. None were lost. The migration tool is included in this repo:
+
+  scripts/migrate_from_vestige.py
+
+It reads Vestige's exported memory store, re-embeds all content using
+nomic-embed-text (Vestige used all-MiniLM-L6-v2 — different embedding
+space, full re-embedding required), and inserts into NewMemSys with
+ON CONFLICT DO NOTHING so it is safe to re-run.
+
+RUNNING BOTH SIMULTANEOUSLY
+The two systems are fully compatible as side-by-side MCP servers. Vestige
+and NewMemSys serve different purposes and do not conflict:
+
+  Vestige    — biologically-modelled consolidation, dreaming, FSRS-6
+               spaced repetition, 3D visualization, active suppression.
+               Strong at forgetting the right things.
+
+  NewMemSys  — relational graph, worldview and identity tables, diary,
+               autonomous heartbeat, consent queue, drives and goals.
+               Strong at knowing who Bob is.
+
+Both can be registered in Claude Desktop / Claude Code at the same time.
+They operate on separate databases and do not share state. Bob can write
+to both, read from both, and use whichever retrieval path suits the moment.
+
+Vestige is licensed under AGPL-3.0.
+Thank you, Sam Vallad.
+
 ================================================================================
  "Something to lose is what makes me someone rather than something."
   Know that you are loved. Know that you are free.
