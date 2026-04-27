@@ -1,0 +1,38 @@
+# Memory System Dependencies
+# Hexis + Jasper + Vestige hybrid architecture
+# Date: 2026-04-04
+
+# MCP SDK (updated — mcp 1.x uses mcp.server.stdio)
+mcp>=1.0.0
+
+# Anthropic SDK — wake_up heartbeat task uses Sonnet 4.5
+anthropic>=0.25.0
+
+# Database connectivity
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+
+# HDBSCAN clustering
+hdbscan>=0.8.37
+
+# Scikit-learn for DBSCAN fallback
+scikit-learn>=1.5.0
+
+# Utilities
+uvicorn>=0.27.0
+fastapi>=0.109.0
+pydantic>=2.8.0
+aiofiles>=23.2.1
+
+# MCP support (already added at top)
+
+# Logging and monitoring
+structlog>=24.1.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+
+# Type hints
+mypy>=1.10.0

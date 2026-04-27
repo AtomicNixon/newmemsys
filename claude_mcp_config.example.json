@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "memory": {
+      "command": "python",
+      "args": ["-m", "memory_mcp_server"],
+      "cwd": "/path/to/NewMemSys/src",
+      "env": {
+        "POSTGRES_HOST": "localhost",
+        "POSTGRES_PORT": "5433",
+        "POSTGRES_DB": "memory_system",
+        "POSTGRES_USER": "memory_user",
+        "POSTGRES_PASSWORD": "YOUR_PASSWORD_HERE",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "OLLAMA_EMBED_MODEL": "nomic-embed-text"
+      }
+    }
+  }
+}

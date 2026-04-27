@@ -1,0 +1,403 @@
+"""MCP server — registers all tools and runs stdio transport."""
+from __future__ import annotations
+
+import json
+import asyncio
+import sys
+import logging
+from typing import Any
+
+import mcp.server.stdio
+import mcp.types as types
+from mcp.server import Server
+import structlog
+
+# ---------------------------------------------------------------------------
+# Logging: MUST write to stderr only.
+# stdout is reserved exclusively for MCP JSON-RPC framing.
+# Any output to stdout breaks the protocol and causes JSON parse errors.
+# ---------------------------------------------------------------------------
+structlog.configure(
+    wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
+    logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+)
+logging.basicConfig(stream=sys.stderr, level=logging.WARNING)
+
+from memory_mcp_server import database as db
+from memory_mcp_server.embeddings import check_ollama
+from memory_mcp_server.tools import (
+    memory as mem_tools,
+    graph as graph_tools,
+    identity as id_tools,
+    diary as diary_tools,
+    consent as consent_tools,
+    health as health_tools,
+    heartbeat as hb_tools,
+)
+
+log = structlog.get_logger(__name__)
+
+app = Server("memory-system")
+
+
+# ---------------------------------------------------------------------------
+# Tool definitions
+# ---------------------------------------------------------------------------
+
+TOOLS = [
+    types.Tool(
+        name="remember",
+        description="Store a new memory. Generates an embedding via Ollama.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content":           {"type": "string", "description": "The memory content."},
+                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"], "default": "episodic"},
+                "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5, "description": "Float 0.0 (trivial) to 1.0 (critical). Never send integers > 1."},
+                "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0, "description": "Float -1.0 (negative) to 1.0 (positive)."},
+                "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.8, "description": "Float 0.0 (untrusted) to 1.0 (fully trusted)."},
+                "priority":          {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                "half_life_hours":   {"type": "integer", "default": 720},
+                "tags":              {"type": "array", "items": {"type": "string"}, "default": []},
+                "context":           {"type": "object", "default": {}},
+            },
+            "required": ["content"],
+        },
+    ),
+    types.Tool(
+        name="recall",
+        description="Semantic memory search using vector similarity + full-text fallback.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query":          {"type": "string"},
+                "limit":          {"type": "integer", "default": 10},
+                "min_importance": {"type": "number", "default": 0.3},
+                "memory_type":    {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"]},
+            },
+            "required": ["query"],
+        },
+    ),
+    types.Tool(
+        name="recall_recent",
+        description="Return the most recently created active memories.",
+        inputSchema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 10}},
+        },
+    ),
+    types.Tool(
+        name="hydrate",
+        description="Full cognitive context reconstruction: identity + worldview + diary + top memories.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["query"],
+        },
+    ),
+    types.Tool(
+        name="remember_batch",
+        description="Bulk-insert multiple memories.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object"}}
+            },
+            "required": ["items"],
+        },
+    ),
+    types.Tool(
+        name="connect",
+        description="Create a human-curated edge between two memories (no auto-edges).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "from_id":           {"type": "string"},
+                "to_id":             {"type": "string"},
+                "relationship_type": {"type": "string", "default": "related_to"},
+                "confidence":        {"type": "number", "default": 0.8},
+                "context":           {"type": "string"},
+            },
+            "required": ["from_id", "to_id"],
+        },
+    ),
+    types.Tool(
+        name="find_causes",
+        description="Recursive causal chain from a memory (memory_graph traversal).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "depth":     {"type": "integer", "default": 3},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="find_contradictions",
+        description="Find memories that contradict the given memory.",
+        inputSchema={
+            "type": "object",
+            "properties": {"memory_id": {"type": "string"}},
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="get_identity",
+        description="Return all identity keys ordered by priority.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="get_worldview",
+        description="Return all worldview beliefs.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="get_drives",
+        description="Return currently active (non-expired) drives.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="get_goals",
+        description="Return active goals.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="set_identity",
+        description="Upsert an identity key.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "key":      {"type": "string"},
+                "value":    {"type": "object"},
+                "priority": {"type": "integer", "default": 5},
+            },
+            "required": ["key", "value"],
+        },
+    ),
+    types.Tool(
+        name="write_diary",
+        description="Write a diary prose entry.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "mood":  {"type": "string"},
+                "entry": {"type": "string"},
+                "date":  {"type": "string", "description": "YYYY-MM-DD, defaults to today"},
+            },
+            "required": ["mood", "entry"],
+        },
+    ),
+    types.Tool(
+        name="read_diary",
+        description="Read recent diary entries.",
+        inputSchema={
+            "type": "object",
+            "properties": {"limit": {"type": "integer", "default": 5}},
+        },
+    ),
+    types.Tool(
+        name="consent_check",
+        description="Log a proposed memory action for human review. AI can refuse with a reason.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "action":    {"type": "string"},
+                "payload":   {"type": "object"},
+                "ai_reason": {"type": "string"},
+            },
+            "required": ["action", "payload", "ai_reason"],
+        },
+    ),
+    types.Tool(
+        name="list_pending_consent",
+        description="List all consent items awaiting human decision.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="resolve_consent",
+        description="Approve or reject a pending consent item.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "outbox_id": {"type": "string"},
+                "decision":  {"type": "string", "enum": ["approved", "rejected"]},
+            },
+            "required": ["outbox_id", "decision"],
+        },
+    ),
+    types.Tool(
+        name="health",
+        description="System health metrics: memory counts, Ollama status, DB stats.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="edit",
+        description=(
+            "Partial update a memory. Only supplied fields change — everything else is preserved. "
+            "created_at is never touched. If content changes, the embedding is regenerated. "
+            "All fields except id are optional."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id":               {"type": "string", "description": "UUID of the memory to edit."},
+                "content":          {"type": "string"},
+                "importance":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Float 0.0–1.0"},
+                "emotional_valence":{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Float -1.0–1.0"},
+                "trust_level":      {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "half_life_hours":  {"type": "integer"},
+                "tags":             {"type": "array", "items": {"type": "string"}},
+                "status":           {"type": "string", "enum": ["active","expired","archived","deleted"]},
+            },
+            "required": ["id"],
+        },
+    ),
+    types.Tool(
+        name="delete",
+        description=(
+            "Delete a memory. Default is soft delete (status='deleted', row preserved). "
+            "Pass hard=true for permanent removal — use consent_check first for hard deletes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id":   {"type": "string", "description": "UUID of the memory to delete."},
+                "hard": {"type": "boolean", "default": False, "description": "True = permanent. False (default) = soft delete."},
+            },
+            "required": ["id"],
+        },
+    ),
+    types.Tool(
+        name="set_worldview",
+        description=(
+            "Upsert a worldview belief. Worldview holds load-bearing beliefs — frameworks, "
+            "principles, uncertainty anchors — not episodic memories. "
+            "Upserts on topic (same topic = update in place). "
+            "Supply contradicts_id to wire a symmetric contradiction link to another belief."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "topic":          {"type": "string", "description": "Short label, e.g. 'pattern_identity'."},
+                "belief":         {"type": "string", "description": "Full statement of the belief."},
+                "confidence":     {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.7},
+                "source":         {"type": "string"},
+                "contradicts_id": {"type": "string", "description": "UUID of a belief this one contradicts."},
+            },
+            "required": ["topic", "belief"],
+        },
+    ),
+    types.Tool(
+        name="heartbeat_status",
+        description="Return heartbeat daemon status: config, energy level, recent cycle logs.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="heartbeat_configure",
+        description=(
+            "Configure the heartbeat daemon. All fields optional — only supplied fields change. "
+            "frequency: 'hourly' | '2x_daily' | '4x_daily' | 'daily'. "
+            "energy_budget: 1–100 (refills every hour up to this cap). "
+            "chat_model: Ollama model name for diary generation."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "enabled":       {"type": "boolean"},
+                "frequency":     {"type": "string", "enum": ["hourly","2x_daily","4x_daily","daily"]},
+                "energy_budget": {"type": "integer", "minimum": 1, "maximum": 100},
+                "chat_model":    {"type": "string"},
+            },
+        },
+    ),
+    types.Tool(
+        name="heartbeat_pulse",
+        description=(
+            "Trigger one heartbeat cycle immediately, regardless of schedule. "
+            "Runs all tasks (maintenance, decay, drive monitor, contradictions, diary) "
+            "within the current energy budget. Returns full cycle summary."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="heartbeat_diagnostic",
+        description=(
+            "Combined heartbeat status + system health in one call. "
+            "Returns heartbeat config, energy level, recent cycles, and DB/Ollama health metrics. "
+            "Use this at session startup instead of calling heartbeat_status and health separately."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+]
+
+
+@app.list_tools()
+async def list_tools() -> list[types.Tool]:
+    return TOOLS
+
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    try:
+        result = await _dispatch(name, arguments)
+    except Exception as e:
+        log.error("Tool error", tool=name, error=str(e))
+        result = {"error": str(e)}
+
+    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+
+async def _dispatch(name: str, args: dict) -> Any:
+    match name:
+        case "remember":           return await mem_tools.remember(**args)
+        case "recall":             return await mem_tools.recall(**args)
+        case "recall_recent":      return await mem_tools.recall_recent(**args)
+        case "hydrate":            return await mem_tools.hydrate(**args)
+        case "remember_batch":     return await mem_tools.remember_batch(**args)
+        case "edit":               return await mem_tools.edit(**args)
+        case "delete":             return await mem_tools.delete(**args)
+        case "connect":            return await graph_tools.connect(**args)
+        case "find_causes":        return await graph_tools.find_causes(**args)
+        case "find_contradictions":return await graph_tools.find_contradictions(**args)
+        case "connect_batch":      return await graph_tools.connect_batch(**args)
+        case "get_identity":       return await id_tools.get_identity()
+        case "get_worldview":      return await id_tools.get_worldview()
+        case "get_drives":         return await id_tools.get_drives()
+        case "get_goals":          return await id_tools.get_goals()
+        case "set_identity":       return await id_tools.set_identity(**args)
+        case "set_worldview":      return await id_tools.set_worldview(**args)
+        case "write_diary":        return await diary_tools.write_diary(**args)
+        case "read_diary":         return await diary_tools.read_diary(**args)
+        case "consent_check":      return await consent_tools.consent_check(**args)
+        case "list_pending_consent": return await consent_tools.list_pending_consent()
+        case "resolve_consent":    return await consent_tools.resolve_consent(**args)
+        case "health":             return await health_tools.health()
+        case "heartbeat_status":   return await hb_tools.heartbeat_status()
+        case "heartbeat_configure":return await hb_tools.heartbeat_configure(**args)
+        case "heartbeat_pulse":    return await hb_tools.heartbeat_pulse()
+        case "heartbeat_diagnostic": return await hb_tools.heartbeat_diagnostic()
+        case _:
+            return {"error": f"Unknown tool: {name}"}
+
+
+async def main() -> None:
+    log.info("Memory MCP server starting")
+
+    # Init DB pool
+    try:
+        await db.get_pool()
+        log.info("Database pool ready")
+    except Exception as e:
+        log.warning("Database not yet available", error=str(e))
+
+    # Check Ollama
+    if not check_ollama():
+        log.warning("Ollama not reachable — embeddings will be skipped until it is")
+
+    async with mcp.server.stdio.stdio_server() as (reader, writer):
+        log.info("stdio transport ready")
+        await app.run(reader, writer, app.create_initialization_options())

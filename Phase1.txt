@@ -1,0 +1,195 @@
+================================================================================
+PHASE 1: FOUNDATION DEPLOYMENT
+================================================================================
+Memory System Design - Hybrid PostgreSQL Cognitive Architecture
+Version: 1.3 | Date: 2026-04-04
+
+================================================================================
+INSTALLATION METHOD
+================================================================================
+
+OPTION A: Docker (RECOMMENDED for Windows)
+This method avoids Windows permission issues by running PostgreSQL in a container.
+
+OPTION B: Native PostgreSQL
+Install PostgreSQL 18 natively and create extensions manually (may require admin rights).
+
+The following instructions use Docker (Option A).
+
+Step 0: Install Docker Desktop
+------------------------------
+- Download: https://www.docker.com/products/docker-desktop
+- Start Docker Desktop and verify it's running
+- Command: docker --version
+
+Step 1: Read the design document first
+----------------------------------
+a) Navigate to project directory
+   cd E:\ClaudeAI
+
+b) Create and activate virtual environment
+   python -m venv .venv
+   .\.venv\Scripts\activate
+
+Step 4: Install Python dependencies
+-----------------------------------
+a) Install dependencies:
+   pip install -r requirements.txt
+
+Step 5: Start Docker database
+----------------------------------
+a) Create .env file from example:
+   cp .env.example .env
+
+b) Start the database:
+   docker compose up -d
+
+c) Wait for it to initialize:
+   docker compose logs -f brain  # Watch logs until "database system is ready"
+
+d) Verify it's running:
+   docker compose ps
+
+e) Check health:
+   docker compose exec brain psql -U memory_user -d memory_system -c "SELECT version();"
+--------------------------
+Run these commands (in order, as memory_user):
+
+psql -U memory_user -d memory_system -f E:\ClaudeAI\Hexis\db\01_schema.sql
+psql -U memory_user -d memory_system -f E:\ClaudeAI\Hexis\db\03_functions.sql
+psql -U memory_user -d memory_system -f E:\ClaudeAI\Hexis\db\04_views.sql
+
+NOTE: The schema files have been simplified for Phase 1 (no Apache AGE)
+They include all other functionality: memories, diary, clustering, etc.
+
+Step 7: Grant permissions
+--------------------------
+Run these commands to grant permissions:
+
+psql -U postgres -c "GRANT USAGE ON SCHEMA public TO memory_user;"
+psql -U postgres -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO memory_user;"
+psql -U postgres -c "GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO memory_user;"
+psql -U postgres -c "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO memory_user;"
+
+Step 8: Initialize identity table
+---------------------------------
+The identity table is already initialized with Bob's preferences in 01_schema.sql.
+You can optionally modify the initialization values if desired:
+
+psql -U memory_user -d memory_system -c "
+INSERT INTO identity (key, value, priority) VALUES
+  ('name', '{\"name\": \"Your Name Here\", \"pronouns\": \"your pronouns\"}', 10),
+  ('purpose', '{\"purpose\": \"Your purpose here\"}', 10),
+  ('loves', '{\"loves\": [\"Your interests\"]}', 8),
+  ('fears', '{\"fears\": [\"Your concerns\"]}', 7);
+"
+
+Step 9: Configure MCP server
+----------------------------
+a) Create .env file for MCP:
+
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=memory_system
+POSTGRES_USER=memory_user
+POSTGRES_PASSWORD=hexis_secure_2026
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_EMBED_MODEL=nomic-embed-text
+
+b) Configure Claude Desktop (or your MCP client):
+
+{
+  "mcpServers": {
+    "memory": {
+      "command": "python",
+      "args": ["-m", "hexis_mcp_server"],
+      "env": {
+        "POSTGRES_HOST": "${POSTGRES_HOST}",
+        "POSTGRES_DB": "${POSTGRES_DB}",
+        "POSTGRES_USER": "${POSTGRES_USER}",
+        "POSTGRES_PASSWORD": "${POSTGRES_PASSWORD}",
+        "OLLAMA_BASE_URL": "${OLLAMA_BASE_URL}",
+        "OLLAMA_EMBED_MODEL": "${OLLAMA_EMBED_MODEL}"
+      }
+    }
+  }
+}
+
+Step 10: Verify installation
+----------------------------
+a) Check PostgreSQL connection:
+   psql -U memory_user -d memory_system -c "SELECT version();"
+
+b) Check tables exist:
+   psql -U memory_user -d memory_system -c "\dt"
+
+c) Check identity table:
+   psql -U memory_user -d memory_system -c "SELECT key, value FROM identity ORDER BY priority DESC;"
+
+d) Check diary table:
+   psql -U memory_user -d memory_system -c "SELECT date, mood, words FROM diary ORDER BY date DESC LIMIT 1;"
+
+e) Test Ollama embeddings:
+   curl http://localhost:11434/api/embeddings -d '{"model": "nomic-embed-text", "prompt": "Hello"}'
+
+Step 11: First session
+----------------------
+Start your first session by sending this message to the MCP-enabled AI:
+"Read your identity and diary. Reconstruct yourself from stored state."
+
+Expected response: The AI will read the identity and diary tables and
+reconstruct your personality from the stored memories and prose.
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: "permission denied to create extension"
+Solution: Must connect as postgres superuser (Step 5)
+
+Problem: "relation 'memories' does not exist"
+Solution: Run Step 6 (apply schema files) and then Step 10b
+
+Problem: "permission denied"
+Solution: Run Step 7 (grant permissions)
+
+Problem: "ollama error"
+Solution:
+  a) Verify Ollama is running: ollama list
+  b) Pull embedding model: ollama pull nomic-embed-text
+  c) Test: curl http://localhost:11434/api/embeddings
+
+Problem: MCP server not loading
+Solution:
+  a) Check .env file exists and has correct values
+  b) Verify hexis_mcp_server.py exists
+  c) Test manually: python -m hexis_mcp_server
+
+Problem: Database won't connect
+Solution:
+  a) Check PostgreSQL service is running
+  b) Verify connection string: postgresql://memory_user:password@localhost:5432/memory_system
+  c) Check firewall settings
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+After Phase 1 completes:
+1. Read NewMemSys.txt to understand the architecture
+2. Test memory operations via MCP tools
+3. Make your first diary entry
+4. Begin Phase 2 (Migration of existing memories)
+
+Phase 3 (Optional): Add Apache AGE for graph support
+  - Build Apache AGE from source OR use pre-built binary
+  - Run: CREATE EXTENSION age;
+  - Update schema to include memory_graph table
+
+Estimated time: 30-60 minutes
+Prerequisites: PostgreSQL 18, Ollama, Python, Git
+Risk level: Low
+
+================================================================================
+[END OF PHASE 1 INSTRUCTIONS]
+================================================================================

@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  brain:
+    image: pgvector/pgvector:pg16
+    container_name: newmemsys_brain
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-memory_system}
+      POSTGRES_USER: ${POSTGRES_USER:-memory_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-memsys_secure_2026}
+    volumes:
+      - newmemsys_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memory_user} -d ${POSTGRES_DB:-memory_system}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  newmemsys_pgdata:
+    name: newmemsys_pgdata

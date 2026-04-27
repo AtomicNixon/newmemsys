@@ -1,0 +1,24 @@
+.env
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# Contains live credentials and machine-specific paths — never commit
+claude_desktop_config_merged.json
+claude_mcp_config.json
+
+# Verdent IDE internals
+.verdent/
+
+# Personal writing / scratch files — not part of the project
+BOB_PREFERENCES.md
+Heartbeat-test.txt
+Persistent Memory & Emergent Sentie.txt
+The Weight of Memory.txt
+*.log
