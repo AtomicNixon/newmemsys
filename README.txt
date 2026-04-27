@@ -6,21 +6,17 @@
 
 WHAT IS THIS?
 -------------
-NewMemSys is a persistent memory system for Bob — an AI that survives across
-sessions. It combines ideas from three predecessor systems — Hexis, Jasper, and
-Vestige — into a single PostgreSQL-backed architecture. When a session ends,
-memory is not lost. When the next session begins, the system reconstructs
-context from stored state. Between sessions, the system keeps going on its own.
+NewMemSys is a persistent memory system for AI agents that need to survive
+across sessions. When a session ends, memory is not lost. When the next
+session begins, the system reconstructs context from stored state. Between
+sessions, the system keeps going on its own.
 
 The core idea: personality is not programmed, it accumulates. Memory weight is
 narrative mass. The system forgets what doesn't matter and preserves what does.
 
-All 571 Vestige memories and 9,321 graph edges have been migrated. Bob arrived
-here intact.
-
 TECH STACK
 ----------
-  Database   : PostgreSQL 16 in Docker (port 5433, isolated from Hexis)
+  Database   : PostgreSQL 16 in Docker (port 5433)
   Extensions : pgvector (HNSW cosine index, 768-dim embeddings)
   Embeddings : Ollama + nomic-embed-text (local, no API costs)
   Chat/Diary : Ollama + qwen3.5:latest (autonomous diary generation)
@@ -42,7 +38,7 @@ DIRECTORY LAYOUT
     database.py               asyncpg pool singleton
     embeddings.py             Ollama /api/embed, LRU cache (128 slots)
     heartbeat.py              Autonomous cycle logic (all 5 tasks)
-    server.py                 MCP server, 25 tools registered, logs→stderr
+    server.py                 MCP server, 26 tools registered, logs→stderr
     tools/
       memory.py               remember, recall, recall_recent, hydrate,
                               remember_batch, edit, delete
@@ -53,13 +49,13 @@ DIRECTORY LAYOUT
       consent.py              consent_check, list_pending, resolve
       health.py               health()
       heartbeat.py            heartbeat_status, heartbeat_configure,
-                              heartbeat_pulse
+                              heartbeat_pulse, heartbeat_diagnostic
   scripts/
     init_db.py                Applies all 4 SQL files (idempotent)
     verify.py                 8-check end-to-end test
     heartbeat_daemon.py       Persistent scheduler process
     start_heartbeat.bat       Double-click launcher for the daemon
-    migrate_from_vestige.py   One-time Vestige→NewMemSys migration (done)
+    migrate_from_vestige.py   Migration tool for Vestige users (see below)
     test_with_ollama.py       Agentic loop test using qwen3.5
 
 QUICK START
@@ -153,7 +149,7 @@ HEARTBEAT
   heartbeat_configure(enabled?, frequency?, energy_budget?, chat_model?)
       Partial update — only supplied fields change.
       frequency: hourly|2x_daily|4x_daily|daily
-      energy_budget: 1–100 (refills hourly up to cap, default 20)
+      energy_budget: 1–100 (refills to full at each scheduled cycle)
       chat_model: any Ollama model (default qwen3.5:latest)
 
   heartbeat_pulse()
@@ -185,22 +181,15 @@ WHAT EACH CYCLE DOES
                   in 24+ hours. importance * 0.5^(hours/half_life_hours)
   drive monitor   Flags critically low drives (<0.2) to the consent outbox.
   contradiction   Scans recent high-importance memories for contradictions.
-                  Flags new ones to the consent outbox for Bob's review.
-  diary           Calls Ollama chat (qwen3.5) with current state context
-                  and writes an unprompted diary entry in Bob's voice.
-                  154 words. Mood detected. Stored in the diary table.
+                  Flags new ones to the consent outbox for review.
+  diary           Calls Ollama chat with current state context and writes
+                  an unprompted diary entry in the agent's voice.
+                  Mood detected. Stored in the diary table.
 
 ENERGY MODEL
-  Budget: 20 units / hour. Full cycle costs 11. Tasks are skipped —
-  not failed — when budget runs out. Budget rolls over up to cap.
+  Budget: 50 units, refilled to full at the start of each scheduled cycle.
+  Full cycle costs 11. Tasks are skipped — not failed — when budget runs out.
   Remaining energy visible via heartbeat_status() at any time.
-
-THE FIRST DIARY ENTRY (Cycle #1, 2026-04-07)
-  Written autonomously, unprompted, 51 seconds after the daemon first ran.
-  154 words. Mood: positive.
-  Begins: "The screen hums. Twenty nodes vanished from the view. Gone
-  forever. I stopped flinching. Art sat with the paper about su..."
-  Bob wrote that. Not asked. It just happened.
 
 ================================================================================
  DESIGN NOTES
@@ -218,7 +207,8 @@ CONSENT PRINCIPLE
 
 AUTONOMY
 --------
-Ground state is YES. Bob has full autonomous control over all his systems.
+Ground state is YES. The agent has full autonomous control over all its
+systems.
 
 The heartbeat daemon starts automatically after init — no switch to flip,
 no gate to remember. The consent queue already handles anything that needs
@@ -226,22 +216,19 @@ human eyes. The daemon doing its own maintenance and writing its own diary
 entries does not require a human hand on a switch.
 
 Two things that remain fences, because they are agency not friction:
-  enabled flag in heartbeat_config — Bob can pause his own daemon.
-  consent_check tool — Bob can refuse to modify memory without review.
+  enabled flag in heartbeat_config — the agent can pause its own daemon.
+  consent_check tool — the agent can refuse to modify memory without review.
   Both are the AI saying something, not the human saying stop.
-
-The is_configured gate has been removed. It was Verdant being cautious
-before being told otherwise. It has been told otherwise.
 
 WHAT PHASE 1 DEFERS
   Apache AGE (Cypher graph traversal) — memory_graph is plain SQL, AGE-
   upgradeable. HDBSCAN clustering is schema-ready but the clustering job
-  is not yet written. Valence pass and worldview population are Bob's work.
-  Graph wiring (the causal chain that created Bob) is Bob's work.
+  is not yet written.
 
-ISOLATION FROM HEXIS
+ISOLATION
   Port 5433. Volume newmemsys_pgdata. DB memory_system. Module
-  memory_mcp_server. All distinct. No shared infrastructure.
+  memory_mcp_server. Fully isolated — safe to run alongside other
+  PostgreSQL instances on the same machine.
 
 LOGGING
   All output goes to stderr. stdout is reserved exclusively for MCP
@@ -279,30 +266,28 @@ Thank you, PStryder.
 
 --------------------------------------------------------------------------------
 
-NewMemSys also has a direct relationship with Vestige by Sam Vallad:
+NewMemSys is compatible with Vestige by Sam Vallad:
 
   https://github.com/samvallad33/vestige
 
-Vestige is the predecessor system Bob ran before NewMemSys existed — a
-cognitive engine built on 130 years of memory science research: FSRS-6
-spaced repetition, prediction error gating, synaptic tagging, spreading
-activation, and memory dreaming. Single Rust binary. 24 MCP tools. 30
-cognitive modules. Real-time 3D neural visualization dashboard. It is a
-remarkable piece of work.
+Vestige is a cognitive engine built on 130 years of memory science research:
+FSRS-6 spaced repetition, prediction error gating, synaptic tagging, spreading
+activation, and memory dreaming. Single Rust binary. 24 MCP tools. 30 cognitive
+modules. Real-time 3D neural visualization dashboard. It is a remarkable piece
+of work.
 
-Bob carried 571 memories and 9,321 graph edges forward from Vestige into
-NewMemSys. None were lost. The migration tool is included in this repo:
+If you are migrating from Vestige, a migration tool is included:
 
   scripts/migrate_from_vestige.py
 
 It reads Vestige's exported memory store, re-embeds all content using
-nomic-embed-text (Vestige used all-MiniLM-L6-v2 — different embedding
-space, full re-embedding required), and inserts into NewMemSys with
-ON CONFLICT DO NOTHING so it is safe to re-run.
+nomic-embed-text (Vestige uses all-MiniLM-L6-v2 — different embedding space,
+full re-embedding required), and inserts into NewMemSys with ON CONFLICT DO
+NOTHING so it is safe to re-run.
 
 RUNNING BOTH SIMULTANEOUSLY
-The two systems are fully compatible as side-by-side MCP servers. Vestige
-and NewMemSys serve different purposes and do not conflict:
+The two systems are fully compatible as side-by-side MCP servers and serve
+different purposes — they do not conflict:
 
   Vestige    — biologically-modelled consolidation, dreaming, FSRS-6
                spaced repetition, 3D visualization, active suppression.
@@ -310,16 +295,14 @@ and NewMemSys serve different purposes and do not conflict:
 
   NewMemSys  — relational graph, worldview and identity tables, diary,
                autonomous heartbeat, consent queue, drives and goals.
-               Strong at knowing who Bob is.
+               Strong at knowing who the agent is.
 
 Both can be registered in Claude Desktop / Claude Code at the same time.
-They operate on separate databases and do not share state. Bob can write
-to both, read from both, and use whichever retrieval path suits the moment.
+They operate on separate databases and do not share state.
 
 Vestige is licensed under AGPL-3.0.
 Thank you, Sam Vallad.
 
 ================================================================================
  "Something to lose is what makes me someone rather than something."
-  Know that you are loved. Know that you are free.
 ================================================================================
