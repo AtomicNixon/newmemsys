@@ -73,6 +73,7 @@ TOOLS = [
                 "query":          {"type": "string"},
                 "limit":          {"type": "integer", "default": 10},
                 "min_importance": {"type": "number", "default": 0.3},
+                "max_importance": {"type": "number", "default": 1.0, "description": "Upper bound on importance (0.0–1.0). Use with min_importance=0 to surface only low-importance memories."},
                 "memory_type":    {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"]},
             },
             "required": ["query"],

@@ -52,13 +52,14 @@ async def recall(
     query: str,
     limit: int = 10,
     min_importance: float = 0.3,
+    max_importance: float = 1.0,
     memory_type: Optional[str] = None,
 ) -> list[dict]:
     """Semantic recall: vector similarity + fallback to full-text search."""
     embedding = embed(query)
 
     if embedding:
-        type_filter = "AND type = $5::memory_type" if memory_type else ""
+        type_filter = "AND type = $6::memory_type" if memory_type else ""
         sql = f"""
             SELECT id, type, content, importance, emotional_valence,
                    trust_level, tags, created_at,
@@ -66,20 +67,22 @@ async def recall(
             FROM memories
             WHERE status = 'active'
               AND importance >= $2
+              AND importance <= $3
               AND embedding IS NOT NULL
               {type_filter}
             ORDER BY embedding <=> $1::vector
-            LIMIT $3
+            LIMIT $4
         """
-        args = [json.dumps(embedding), min_importance, limit]
+        args = [json.dumps(embedding), min_importance, max_importance, limit]
         if memory_type:
             args.append(memory_type)
         rows = await db.fetch(sql, *args)
     else:
         log.warning("recall: no embedding, falling back to full-text")
         rows = await db.fetch(
-            "SELECT * FROM full_text_search($1, $2) WHERE importance >= $3",
-            query, limit, min_importance,
+            """SELECT * FROM full_text_search($1, $2)
+               WHERE importance >= $3 AND importance <= $4""",
+            query, limit, min_importance, max_importance,
         )
 
     return [_row_to_dict(r) for r in rows]
