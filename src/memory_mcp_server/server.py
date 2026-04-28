@@ -75,6 +75,7 @@ TOOLS = [
                 "min_importance": {"type": "number", "default": 0.3},
                 "max_importance": {"type": "number", "default": 1.0, "description": "Upper bound on importance (0.0–1.0). Use with min_importance=0 to surface only low-importance memories."},
                 "memory_type":    {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"]},
+                "fields":         {"type": "array", "items": {"type": "string"}, "description": "Columns to return. Omit for all. Use [\"id\",\"content\",\"importance\",\"emotional_valence\"] for slim payload during bulk sweeps."},
             },
             "required": ["query"],
         },
@@ -98,6 +99,15 @@ TOOLS = [
             },
             "required": ["query"],
         },
+    ),
+    types.Tool(
+        name="hydrate_light",
+        description=(
+            "Lightweight session start: identity keys + last 2 diary entries only. "
+            "Use instead of hydrate() for short sessions or quick lookups where full "
+            "context reconstruction is not needed. Significantly fewer tokens than hydrate()."
+        ),
+        inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
         name="remember_batch",
@@ -258,6 +268,37 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="edit_batch",
+        description=(
+            "Bulk partial-update multiple memories in one call. "
+            "Each item must have 'id' plus any fields to change: "
+            "importance, emotional_valence, trust_level, half_life_hours, tags, status. "
+            "Ideal for valence/importance sweeps — fix 20-50 memories in one round-trip."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id":                {"type": "string"},
+                            "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+                            "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "half_life_hours":   {"type": "integer"},
+                            "tags":              {"type": "array", "items": {"type": "string"}},
+                            "status":            {"type": "string"},
+                        },
+                        "required": ["id"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
+    ),
+    types.Tool(
         name="delete",
         description=(
             "Delete a memory. Default is soft delete (status='deleted', row preserved). "
@@ -358,8 +399,10 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "recall":             return await mem_tools.recall(**args)
         case "recall_recent":      return await mem_tools.recall_recent(**args)
         case "hydrate":            return await mem_tools.hydrate(**args)
+        case "hydrate_light":      return await mem_tools.hydrate_light()
         case "remember_batch":     return await mem_tools.remember_batch(**args)
         case "edit":               return await mem_tools.edit(**args)
+        case "edit_batch":         return await mem_tools.edit_batch(**args)
         case "delete":             return await mem_tools.delete(**args)
         case "connect":            return await graph_tools.connect(**args)
         case "find_causes":        return await graph_tools.find_causes(**args)

@@ -48,22 +48,49 @@ async def remember(
     return {"id": str(row["id"]), "created_at": str(row["created_at"]), "embedded": embedding is not None}
 
 
+RECALL_FIELDS_ALL = (
+    "id, type, content, importance, emotional_valence, "
+    "trust_level, tags, created_at"
+)
+RECALL_FIELDS_SLIM = "id, content, importance, emotional_valence"
+
+VALID_FIELDS = {"id", "type", "content", "importance", "emotional_valence",
+                "trust_level", "tags", "created_at"}
+
+
 async def recall(
     query: str,
     limit: int = 10,
     min_importance: float = 0.3,
     max_importance: float = 1.0,
     memory_type: Optional[str] = None,
+    fields: Optional[list[str]] = None,
 ) -> list[dict]:
-    """Semantic recall: vector similarity + fallback to full-text search."""
+    """Semantic recall: vector similarity + fallback to full-text search.
+
+    fields: optional list of columns to return. Omit for all columns.
+            Valid: id, type, content, importance, emotional_valence,
+                   trust_level, tags, created_at.
+            Tip: fields=["id","content","importance","emotional_valence"]
+                 halves payload size — useful for bulk valence sweeps.
+    """
     embedding = embed(query)
+
+    # Build SELECT clause
+    if fields:
+        safe = [f for f in fields if f in VALID_FIELDS]
+        if "id" not in safe:
+            safe.insert(0, "id")          # always include id
+        select = ", ".join(safe)
+        distance_col = ""
+    else:
+        select = RECALL_FIELDS_ALL
+        distance_col = ", (embedding <=> $1::vector) AS distance"
 
     if embedding:
         type_filter = "AND type = $6::memory_type" if memory_type else ""
         sql = f"""
-            SELECT id, type, content, importance, emotional_valence,
-                   trust_level, tags, created_at,
-                   (embedding <=> $1::vector) AS distance
+            SELECT {select}{distance_col}
             FROM memories
             WHERE status = 'active'
               AND importance >= $2
@@ -80,7 +107,7 @@ async def recall(
     else:
         log.warning("recall: no embedding, falling back to full-text")
         rows = await db.fetch(
-            """SELECT * FROM full_text_search($1, $2)
+            f"""SELECT {select} FROM full_text_search($1, $2)
                WHERE importance >= $3 AND importance <= $4""",
             query, limit, min_importance, max_importance,
         )
@@ -110,6 +137,37 @@ async def hydrate(query: str, limit: int = 10) -> dict:
         embed_literal, limit,
     )
     return json.loads(result) if result else {}
+
+
+async def hydrate_light() -> dict:
+    """Lightweight session start: identity keys + last 2 diary entries only.
+
+    Use instead of hydrate() when full context reconstruction is not needed —
+    short sessions, quick lookups, or when you already know the context.
+    Saves significant tokens vs hydrate().
+    """
+    pool = await db.get_pool()
+
+    identity_rows = await pool.fetch(
+        "SELECT key, value, priority FROM identity ORDER BY priority DESC"
+    )
+    identity = {r["key"]: r["value"] for r in identity_rows}
+
+    diary_rows = await pool.fetch(
+        """SELECT date, mood, entry FROM diary
+           ORDER BY date DESC, created_at DESC LIMIT 2"""
+    )
+    diary = [dict(r) for r in diary_rows]
+    for d in diary:
+        if hasattr(d.get("date"), "isoformat"):
+            d["date"] = d["date"].isoformat()
+
+    return {
+        "identity": identity,
+        "recent_diary": diary,
+        "note": "Light hydration — identity + last 2 diary entries. "
+                "Call hydrate(query) for full context including memories.",
+    }
 
 
 async def remember_batch(items: list[dict]) -> list[dict]:
@@ -197,6 +255,48 @@ async def edit(
     result = _row_to_dict(row)
     result["re_embedded"] = re_embedded
     return result
+
+
+async def edit_batch(items: list[dict]) -> dict:
+    """Bulk partial-update multiple memories in one call.
+
+    Each item must have 'id' plus any fields to change:
+      importance, emotional_valence, trust_level, half_life_hours, tags, status.
+    Content changes (which trigger re-embedding) are supported but slow —
+    for pure valence/importance sweeps omit content entirely.
+
+    Returns a summary: updated count, skipped count, any errors.
+    """
+    updated = []
+    skipped = []
+    errors = []
+
+    for item in items:
+        item_id = item.get("id")
+        if not item_id:
+            errors.append({"item": item, "error": "missing id"})
+            continue
+        try:
+            # Pass only recognised edit fields
+            kwargs = {k: v for k, v in item.items()
+                      if k in ("id", "content", "importance", "emotional_valence",
+                               "trust_level", "half_life_hours", "tags", "status")}
+            result = await edit(**kwargs)
+            if result.get("error"):
+                errors.append({"id": item_id, "error": result["error"]})
+            elif not result.get("updated", True):
+                skipped.append(item_id)
+            else:
+                updated.append(item_id)
+        except Exception as e:
+            errors.append({"id": item_id, "error": str(e)})
+
+    return {
+        "updated": len(updated),
+        "skipped": len(skipped),
+        "errors":  errors,
+        "updated_ids": updated,
+    }
 
 
 async def delete(id: str, hard: bool = False) -> dict:
