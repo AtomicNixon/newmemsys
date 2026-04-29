@@ -1,5 +1,5 @@
 # Memory System Dependencies
-# Hexis + Jasper + Vestige hybrid architecture
+# Phase 1 + Phase 2 (Apache AGE graph layer)
 # Date: 2026-04-04
 
 # MCP SDK (updated — mcp 1.x uses mcp.server.stdio)

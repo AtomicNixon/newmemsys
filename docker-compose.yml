@@ -2,7 +2,15 @@ version: "3.9"
 
 services:
   brain:
-    image: pgvector/pgvector:pg16
+    # Phase 2: custom image with pgvector + Apache AGE
+    # First run: docker compose build  (takes ~3 min, compiles AGE from source)
+    # Subsequent runs: docker compose up -d  (uses cached image)
+    # To use Phase 1 image without AGE, comment out 'build' and uncomment 'image':
+    #   image: pgvector/pgvector:pg16
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: newmemsys_brain:phase2
     container_name: newmemsys_brain
     restart: unless-stopped
     ports:

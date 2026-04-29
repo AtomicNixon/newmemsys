@@ -2,10 +2,13 @@
 init_db.py — Apply schema files to the NewMemSys Docker database.
 
 Usage:
-    python scripts/init_db.py
+    python scripts/init_db.py              # Phase 1 schema only
+    python scripts/init_db.py --with-age   # Phase 1 + AGE graph layer
 
-Reads connection info from .env in the project root.
-Applies db/01_schema.sql, db/02_functions.sql, db/03_views.sql in order.
+Reads connection info from .env in the project root (optional).
+Falls back to environment variables or hardcoded defaults.
+
+Safe to re-run: all SQL files are idempotent.
 """
 from __future__ import annotations
 
@@ -13,11 +16,10 @@ import os
 import sys
 from pathlib import Path
 
-# Allow running from repo root or scripts/
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-# Load .env
+# Load .env if present
 env_path = ROOT / ".env"
 if env_path.exists():
     with open(env_path) as f:
@@ -37,16 +39,18 @@ DB_CONFIG = dict(
     password=os.getenv("POSTGRES_PASSWORD", "memsys_secure_2026"),
 )
 
-SQL_FILES = [
+PHASE1_FILES = [
     ROOT / "db" / "01_schema.sql",
     ROOT / "db" / "02_functions.sql",
     ROOT / "db" / "03_views.sql",
     ROOT / "db" / "04_heartbeat.sql",
 ]
 
+AGE_FILE = ROOT / "db" / "05_age_graph.sql"
+
 
 def apply_sql(conn, path: Path) -> None:
-    print(f"  Applying {path.name} ...", end=" ")
+    print(f"  Applying {path.name} ...", end=" ", flush=True)
     with open(path, encoding="utf-8") as f:
         sql = f.read()
     with conn.cursor() as cur:
@@ -55,8 +59,23 @@ def apply_sql(conn, path: Path) -> None:
     print("OK")
 
 
+def check_age_available(conn) -> bool:
+    """Check whether AGE is installed in the current PostgreSQL instance."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM pg_available_extensions WHERE name = 'age'"
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def main() -> None:
-    print(f"\nConnecting to {DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']} ...")
+    with_age = "--with-age" in sys.argv
+
+    print(f"\nConnecting to {DB_CONFIG['host']}:{DB_CONFIG['port']}"
+          f"/{DB_CONFIG['dbname']} ...")
     try:
         conn = psycopg2.connect(**DB_CONFIG)
     except psycopg2.OperationalError as e:
@@ -66,13 +85,47 @@ def main() -> None:
 
     print("Connected.\n")
 
-    for sql_file in SQL_FILES:
+    # ── Phase 1 ───────────────────────────────────────────────────────────────
+    print("Phase 1 — core schema:")
+    for sql_file in PHASE1_FILES:
         try:
             apply_sql(conn, sql_file)
         except Exception as e:
             conn.rollback()
             print(f"FAILED\n{e}")
             sys.exit(1)
+
+    # ── Phase 2 (AGE) ─────────────────────────────────────────────────────────
+    if with_age:
+        print("\nPhase 2 — Apache AGE graph layer:")
+
+        if not check_age_available(conn):
+            print(
+                "\n  ERROR: AGE extension not available in this PostgreSQL instance.\n"
+                "  You need to rebuild the Docker image first:\n\n"
+                "      docker compose down\n"
+                "      docker compose build\n"
+                "      docker compose up -d\n"
+                "  Then re-run:  python scripts/init_db.py --with-age\n"
+            )
+            conn.close()
+            sys.exit(1)
+
+        try:
+            apply_sql(conn, AGE_FILE)
+        except Exception as e:
+            conn.rollback()
+            print(f"FAILED\n{e}")
+            sys.exit(1)
+
+        print("\n  AGE graph layer installed.")
+        print("  To migrate existing memories and edges into the graph:")
+        print("    SELECT * FROM sync_memories_to_age();")
+        print("    SELECT * FROM sync_edges_to_age();")
+        print("    SELECT * FROM age_graph_stats;")
+    else:
+        print("\n  (Skipping AGE graph layer. Re-run with --with-age after")
+        print("   rebuilding the Docker image to enable Phase 2.)")
 
     conn.close()
     print("\nDatabase initialized successfully.")
