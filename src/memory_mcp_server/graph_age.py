@@ -209,20 +209,22 @@ async def neighbourhood(
     """
     All Memory nodes connected to this one within `hops` steps, any edge type.
     Useful for: 'what else is near this memory in the graph?'
-    Returns: list of dicts with memory properties + relationship type + distance.
+
+    NOTE: AGE 1.5.0 does not support length(variable) on variable-length
+    edge patterns. We return DISTINCT neighbours up to hops and trust AGE's
+    native ordering (shorter paths first in variable-length MATCH).
     """
     query = f"""
         MATCH (start:Memory {{pg_id: '{memory_id}'}})-[r*1..{hops}]-(neighbour:Memory)
         WHERE neighbour.pg_id <> '{memory_id}'
-        RETURN DISTINCT neighbour, length(r) AS distance
+        RETURN DISTINCT neighbour
     """
-    rows = await cypher_query(pool, query, ["neighbour", "distance"])
+    rows = await cypher_query(pool, query, ["neighbour"])
     results = []
     for row in rows:
         props = _extract_props(row["neighbour"])
-        props["distance"] = _parse_agtype(row["distance"])
         results.append(props)
-    return sorted(results, key=lambda x: x.get("distance", 99))
+    return results
 
 
 async def path_between(
