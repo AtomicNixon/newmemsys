@@ -28,6 +28,7 @@ from memory_mcp_server.embeddings import check_ollama
 from memory_mcp_server.tools import (
     memory as mem_tools,
     graph as graph_tools,
+    graph_cypher as gc_tools,
     identity as id_tools,
     diary as diary_tools,
     consent as consent_tools,
@@ -156,6 +157,91 @@ TOOLS = [
             "required": ["memory_id"],
         },
     ),
+    # ── Phase 2: AGE Cypher graph traversals ──────────────────────────────────
+    types.Tool(
+        name="find_causes_cypher",
+        description=(
+            "Multi-hop causal chain via Cypher graph traversal (Phase 2). "
+            "Returns all Memory nodes reachable via CAUSES edges within depth hops, "
+            "with hop count. Replaces the recursive SQL find_causes once AGE is active."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "depth":     {"type": "integer", "default": 5},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="belief_support_cypher",
+        description=(
+            "Find memories connected to a worldview belief via INFORMS_BELIEF edges. "
+            "Answers: 'what memories support this belief?' Returns memory nodes "
+            "and the worldview entry they connect to."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"topic": {"type": "string"}},
+            "required": ["topic"],
+        },
+    ),
+    types.Tool(
+        name="contradiction_cluster_cypher",
+        description=(
+            "Full contradiction neighbourhood via Cypher. "
+            "Returns all memories in the CONTRADICTS subgraph reachable from this node "
+            "(bidirectional, up to 3 hops)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {"memory_id": {"type": "string"}},
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="neighbourhood_cypher",
+        description=(
+            "All memories connected to this one within N hops, any edge type. "
+            "Useful for: 'what else is near this memory in the graph?' "
+            "Results sorted by distance (closest first)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {"type": "string"},
+                "hops":      {"type": "integer", "default": 2},
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="path_between_cypher",
+        description=(
+            "Shortest path between two memories via Cypher. "
+            "Returns path length and ordered list of intermediate memory pg_ids, "
+            "or null if no path exists within max_hops."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id_a":      {"type": "string"},
+                "id_b":      {"type": "string"},
+                "max_hops":  {"type": "integer", "default": 6},
+            },
+            "required": ["id_a", "id_b"],
+        },
+    ),
+    types.Tool(
+        name="age_graph_status",
+        description=(
+            "Quick status of the AGE cognitive graph: vertex count, edge count, "
+            "and comparison with the relational tables."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    # ── end Phase 2 graph tools ───────────────────────────────────────────────
     types.Tool(
         name="get_identity",
         description="Return all identity keys ordered by priority.",
@@ -407,6 +493,12 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "connect":            return await graph_tools.connect(**args)
         case "find_causes":        return await graph_tools.find_causes(**args)
         case "find_contradictions":return await graph_tools.find_contradictions(**args)
+        case "find_causes_cypher":      return await gc_tools.find_causes_cypher(**args)
+        case "belief_support_cypher":   return await gc_tools.belief_support_cypher(**args)
+        case "contradiction_cluster_cypher": return await gc_tools.contradiction_cluster_cypher(**args)
+        case "neighbourhood_cypher":    return await gc_tools.neighbourhood_cypher(**args)
+        case "path_between_cypher":     return await gc_tools.path_between_cypher(**args)
+        case "age_graph_status":        return await gc_tools.age_graph_status()
         case "connect_batch":      return await graph_tools.connect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()
         case "get_worldview":      return await id_tools.get_worldview()
