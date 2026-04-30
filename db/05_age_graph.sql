@@ -112,7 +112,6 @@ DECLARE
     v_count     INT := 0;
     s_count     INT := 0;
     exists_val  BOOL;
-    cypher_q    TEXT;
 BEGIN
     FOR mem IN
         SELECT id, type, content, importance, emotional_valence,
@@ -120,39 +119,39 @@ BEGIN
         FROM memories
         WHERE status = 'active'
     LOOP
-        -- Check if vertex already exists for this pg id
-        SELECT EXISTS (
-            SELECT 1 FROM cypher('cognitive_graph', $$
-                MATCH (m:Memory {pg_id: %L})
-                RETURN m
-            $$) AS (m agtype)
-        ) INTO exists_val
-        USING mem.id::text;
+        -- Check if vertex already exists for this pg_id
+        EXECUTE format(
+            $q$SELECT EXISTS (
+                SELECT 1 FROM cypher('cognitive_graph', $$
+                    MATCH (m:Memory {pg_id: %L})
+                    RETURN m
+                $$) AS (m agtype))$q$,
+            mem.id::text
+        ) INTO exists_val;
 
         IF NOT exists_val THEN
-            cypher_q := format(
+            EXECUTE format(
                 $cypher$
                 SELECT * FROM cypher('cognitive_graph', $$
                     CREATE (m:Memory {
-                        pg_id: '%s',
-                        type: '%s',
+                        pg_id: %L,
+                        type: %L,
                         content: %L,
                         importance: %s,
                         emotional_valence: %s,
                         trust_level: %s,
-                        created_at: '%s'
+                        created_at: %L
                     })
                 $$) AS (m agtype)
                 $cypher$,
-                mem.id,
-                mem.type,
+                mem.id::text,
+                mem.type::text,
                 mem.content,
                 mem.importance,
                 mem.emotional_valence,
                 mem.trust_level,
-                mem.created_at
+                mem.created_at::text
             );
-            EXECUTE cypher_q;
             v_count := v_count + 1;
         ELSE
             s_count := s_count + 1;
@@ -187,14 +186,17 @@ BEGIN
         edge_label := upper(edge.relationship_type::text);
 
         -- Check if this edge already exists
-        SELECT EXISTS (
-            SELECT 1 FROM cypher('cognitive_graph', $$
-                MATCH (a:Memory {pg_id: %L})-[r]->(b:Memory {pg_id: %L})
-                WHERE r.pg_id = %L
-                RETURN r
-            $$) AS (r agtype)
-        ) INTO exists_val
-        USING edge.memory_id::text, edge.connected_memory_id::text, edge.id::text;
+        EXECUTE format(
+            $q$SELECT EXISTS (
+                SELECT 1 FROM cypher('cognitive_graph', $$
+                    MATCH (a:Memory {pg_id: %L})-[r]->(b:Memory {pg_id: %L})
+                    WHERE r.pg_id = %L
+                    RETURN r
+                $$) AS (r agtype))$q$,
+            edge.memory_id::text,
+            edge.connected_memory_id::text,
+            edge.id::text
+        ) INTO exists_val;
 
         IF NOT exists_val THEN
             EXECUTE format(
