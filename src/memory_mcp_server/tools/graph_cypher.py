@@ -18,15 +18,22 @@ from memory_mcp_server import graph_age as age
 log = structlog.get_logger(__name__)
 
 
-async def find_causes_cypher(memory_id: str, depth: int = 5) -> list[dict]:
+async def find_causes_cypher(
+    memory_id: str,
+    depth: int = 5,
+    fields: Optional[list[str]] = None,
+) -> list[dict]:
     """
     Multi-hop causal chain via Cypher.
     Returns all Memory nodes reachable via CAUSES edges within depth hops,
-    with hop count and path length.
+    with hop count.
+
+    fields: optional list of properties to return. Use ["pg_id","content","importance"]
+            for slim payload on deep traversals with many results.
     """
     pool = await db.get_pool()
-    results = await age.causal_chain(pool, memory_id, depth)
-    log.info("find_causes_cypher", memory_id=memory_id, depth=depth, found=len(results))
+    results = await age.causal_chain(pool, memory_id, depth, fields)
+    log.info("find_causes_cypher", memory_id=memory_id, depth=depth, fields=fields, found=len(results))
     return results
 
 

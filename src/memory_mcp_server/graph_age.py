@@ -138,13 +138,15 @@ async def causal_chain(
     pool: asyncpg.Pool,
     memory_id: str,
     depth: int = 5,
+    fields: Optional[list[str]] = None,
 ) -> list[dict]:
     """
     Multi-hop causal chain from a memory.
     Returns all Memory nodes reachable via CAUSES edges within `depth` hops,
     with hop count and path length.
 
-    Replaces the recursive CTE in graph.py find_causes() once AGE is active.
+    fields: optional list of properties to return. Omit for all.
+            Use ["pg_id","content","importance"] for slim payload.
     """
     query = f"""
         MATCH path = (start:Memory {{pg_id: '{memory_id}'}})-[:CAUSES*1..{depth}]->(effect:Memory)
@@ -155,6 +157,8 @@ async def causal_chain(
     for row in rows:
         props = _extract_props(row["effect"])
         props["hops"] = _parse_agtype(row["hops"])
+        if fields:
+            props = {k: v for k, v in props.items() if k in fields}
         results.append(props)
     return results
 

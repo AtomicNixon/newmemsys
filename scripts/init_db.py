@@ -46,7 +46,10 @@ PHASE1_FILES = [
     ROOT / "db" / "04_heartbeat.sql",
 ]
 
-AGE_FILE = ROOT / "db" / "05_age_graph.sql"
+AGE_FILES = [
+    ROOT / "db" / "05_age_graph.sql",
+    ROOT / "db" / "06_age_triggers.sql",
+]
 
 
 def apply_sql(conn, path: Path) -> None:
@@ -111,12 +114,13 @@ def main() -> None:
             conn.close()
             sys.exit(1)
 
-        try:
-            apply_sql(conn, AGE_FILE)
-        except Exception as e:
-            conn.rollback()
-            print(f"FAILED\n{e}")
-            sys.exit(1)
+        for sql_file in AGE_FILES:
+            try:
+                apply_sql(conn, sql_file)
+            except Exception as e:
+                conn.rollback()
+                print(f"FAILED\n{e}")
+                sys.exit(1)
 
         print("\n  AGE graph layer installed.")
         print("  To migrate existing memories and edges into the graph:")

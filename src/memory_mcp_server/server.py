@@ -170,6 +170,7 @@ TOOLS = [
             "properties": {
                 "memory_id": {"type": "string"},
                 "depth":     {"type": "integer", "default": 5},
+                "fields":    {"type": "array", "items": {"type": "string"}, "description": "Properties to return. Use [\"pg_id\",\"content\",\"importance\"] for slim payload on deep traversals."},
             },
             "required": ["memory_id"],
         },
