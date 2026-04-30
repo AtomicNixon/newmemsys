@@ -16,11 +16,13 @@ FROM pgvector/pgvector:pg16
 
 # ── Build dependencies ────────────────────────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
         build-essential \
         git \
         postgresql-server-dev-16 \
         bison \
         flex \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Apache AGE v1.5.0-rc0 (PG16 branch) ──────────────────────────────────────
@@ -39,9 +41,9 @@ RUN echo "shared_preload_libraries = 'age'" \
         >> /usr/share/postgresql/postgresql.conf.sample
 
 # ── Remove build tools from final image ──────────────────────────────────────
+# ca-certificates is intentionally kept — PostgreSQL needs it for SSL.
 RUN apt-get purge -y --auto-remove \
         build-essential \
-        git \
         postgresql-server-dev-16 \
         bison \
         flex \
