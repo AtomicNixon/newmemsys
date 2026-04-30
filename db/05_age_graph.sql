@@ -112,6 +112,7 @@ DECLARE
     v_count     INT := 0;
     s_count     INT := 0;
     exists_val  BOOL;
+    content_esc TEXT;
 BEGIN
     FOR mem IN
         SELECT id, type, content, importance, emotional_valence,
@@ -130,13 +131,15 @@ BEGIN
         ) INTO exists_val;
 
         IF NOT exists_val THEN
+            -- Cypher uses \' for single quotes, not SQL's '' doubling
+            content_esc := replace(replace(mem.content, '\', '\\'), '''', '\''');
             EXECUTE format(
                 $cypher$
                 SELECT * FROM cypher('cognitive_graph', $$
                     CREATE (m:Memory {
                         pg_id: %L,
                         type: %L,
-                        content: %L,
+                        content: '%s',
                         importance: %s,
                         emotional_valence: %s,
                         trust_level: %s,
@@ -146,7 +149,7 @@ BEGIN
                 $cypher$,
                 mem.id::text,
                 mem.type::text,
-                mem.content,
+                content_esc,
                 mem.importance,
                 mem.emotional_valence,
                 mem.trust_level,
@@ -176,6 +179,7 @@ DECLARE
     s_count     INT := 0;
     exists_val  BOOL;
     edge_label  TEXT;
+    context_esc TEXT;
 BEGIN
     FOR edge IN
         SELECT g.id, g.memory_id, g.connected_memory_id,
@@ -199,6 +203,7 @@ BEGIN
         ) INTO exists_val;
 
         IF NOT exists_val THEN
+            context_esc := replace(replace(COALESCE(edge.context, ''), '\', '\\'), '''', '\''');
             EXECUTE format(
                 $cypher$
                 SELECT * FROM cypher('cognitive_graph', $$
@@ -206,7 +211,7 @@ BEGIN
                     CREATE (a)-[r:%s {
                         pg_id: '%s',
                         confidence: %s,
-                        context: %L
+                        context: '%s'
                     }]->(b)
                 $$) AS (r agtype)
                 $cypher$,
@@ -215,7 +220,7 @@ BEGIN
                 edge_label,
                 edge.id,
                 edge.confidence,
-                COALESCE(edge.context, '')
+                context_esc
             );
             e_count := e_count + 1;
         ELSE
@@ -250,5 +255,5 @@ SELECT
 -- Expected output for a populated system:
 --   memory_vertices | total_edges | pg_edges | pg_memories
 --   ----------------+-------------+----------+-------------
---   572             | 9321        | 9321     | 572
+--   607             | 9321        | 9321     | 607
 -- =============================================================================
