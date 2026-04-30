@@ -20,6 +20,7 @@ DECLARE
     context_esc TEXT;
     both_exist  BOOL;
 BEGIN
+    EXECUTE 'LOAD ''age''';
     edge_label  := upper(NEW.relationship_type::text);
     context_esc := replace(replace(COALESCE(NEW.context, ''), '\', '\\'), '''', '\''');
 
@@ -55,7 +56,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$func$ LANGUAGE plpgsql;
+$func$ LANGUAGE plpgsql SET search_path = ag_catalog, public;
 
 -- Attach trigger
 DROP TRIGGER IF EXISTS tg_sync_edge_to_age ON memory_graph;
