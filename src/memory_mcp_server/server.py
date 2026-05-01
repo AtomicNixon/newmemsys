@@ -242,6 +242,24 @@ TOOLS = [
         ),
         inputSchema={"type": "object", "properties": {}},
     ),
+    types.Tool(
+        name="connect_belief",
+        description=(
+            "Create an INFORMS_BELIEF edge from a Memory vertex to a WorldView vertex "
+            "in the AGE graph. Idempotent — returns success=True if already connected. "
+            "Use after sync_worldview_to_age() to wire memories to beliefs."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id":    {"type": "string", "description": "UUID of the memory (source)"},
+                "worldview_id": {"type": "string", "description": "UUID of the worldview entry (target)"},
+                "confidence":   {"type": "number", "default": 0.8},
+                "context":      {"type": "string"},
+            },
+            "required": ["memory_id", "worldview_id"],
+        },
+    ),
     # ── end Phase 2 graph tools ───────────────────────────────────────────────
     types.Tool(
         name="get_identity",
@@ -500,6 +518,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "neighbourhood_cypher":    return await gc_tools.neighbourhood_cypher(**args)
         case "path_between_cypher":     return await gc_tools.path_between_cypher(**args)
         case "age_graph_status":        return await gc_tools.age_graph_status()
+        case "connect_belief":          return await gc_tools.connect_belief(**args)
         case "connect_batch":      return await graph_tools.connect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()
         case "get_worldview":      return await id_tools.get_worldview()

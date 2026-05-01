@@ -91,3 +91,31 @@ async def age_graph_status() -> dict:
     pool = await db.get_pool()
     stats = await age.age_stats(pool)
     return stats
+
+
+async def connect_belief(
+    memory_id: str,
+    worldview_id: str,
+    confidence: float = 0.8,
+    context: Optional[str] = None,
+) -> dict:
+    """
+    Create an INFORMS_BELIEF edge from a Memory vertex to a WorldView vertex.
+    Idempotent: returns success=True if already connected.
+    Returns success=False if either vertex is missing from the graph.
+    """
+    pool = await db.get_pool()
+    conn = await pool.acquire()
+    try:
+        await conn.execute("LOAD 'age'")
+        await conn.execute("SET search_path = ag_catalog, public")
+        result = await conn.fetchval(
+            "SELECT connect_belief_pg($1, $2, $3, $4)",
+            memory_id, worldview_id, confidence, context,
+        )
+        return {"success": result, "memory_id": memory_id, "worldview_id": worldview_id}
+    except Exception as e:
+        log.error("connect_belief failed", error=str(e))
+        return {"success": False, "error": str(e)}
+    finally:
+        await pool.release(conn)

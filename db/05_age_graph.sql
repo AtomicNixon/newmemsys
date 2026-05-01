@@ -256,4 +256,151 @@ SELECT
 --   memory_vertices | total_edges | pg_edges | pg_memories
 --   ----------------+-------------+----------+-------------
 --   607             | 9321        | 9321     | 607
+
+-- =============================================================================
+-- MIGRATION FUNCTION: sync_worldview_to_age()
+-- Copies all worldview entries into AGE WorldView vertices.
+-- Idempotent: upserts in place — same topic updates, new topics create.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION sync_worldview_to_age()
+RETURNS TABLE(inserted INT, updated INT, skipped INT) AS $func$
+DECLARE
+    wv          RECORD;
+    v_count     INT := 0;
+    u_count     INT := 0;
+    s_count     INT := 0;
+    exists_val  BOOL;
+    belief_esc  TEXT;
+    source_esc  TEXT;
+BEGIN
+    FOR wv IN
+        SELECT id, topic, belief, confidence, source
+        FROM worldview
+    LOOP
+        belief_esc := replace(replace(COALESCE(wv.belief, ''), '\', '\\'), '''', '\''');
+        source_esc := replace(replace(COALESCE(wv.source, ''), '\', '\\'), '''', '\''');
+
+        -- Check if vertex already exists for this topic
+        EXECUTE format(
+            $q$SELECT EXISTS (
+                SELECT 1 FROM cypher('cognitive_graph', $$
+                    MATCH (w:WorldView {pg_id: %L})
+                    RETURN w
+                $$) AS (w agtype))$q$,
+            wv.id::text
+        ) INTO exists_val;
+
+        IF NOT exists_val THEN
+            -- Create new WorldView vertex
+            EXECUTE format(
+                $cypher$SELECT * FROM cypher('cognitive_graph', $$
+                    CREATE (w:WorldView {
+                        pg_id: '%s',
+                        topic: '%s',
+                        belief: '%s',
+                        confidence: %s,
+                        source: '%s'
+                    })
+                $$) AS (w agtype)$cypher$,
+                wv.id::text,
+                wv.topic,
+                belief_esc,
+                wv.confidence,
+                source_esc
+            );
+            v_count := v_count + 1;
+        ELSE
+            -- Update existing WorldView vertex in place (upsert)
+            EXECUTE format(
+                $cypher$SELECT * FROM cypher('cognitive_graph', $$
+                    MATCH (w:WorldView {pg_id: '%s'})
+                    SET w.topic = '%s',
+                        w.belief = '%s',
+                        w.confidence = %s,
+                        w.source = '%s'
+                    RETURN w
+                $$) AS (w agtype)$cypher$,
+                wv.id::text,
+                wv.topic,
+                belief_esc,
+                wv.confidence,
+                source_esc
+            );
+            u_count := u_count + 1;
+        END IF;
+    END LOOP;
+
+    RETURN QUERY SELECT v_count, u_count, s_count;
+END;
+$func$ LANGUAGE plpgsql;
+
+-- =============================================================================
+-- HELPER FUNCTION: connect_belief_pg(memory_id UUID, worldview_id UUID)
+-- Creates an INFORMS_BELIEF edge from a Memory vertex to a WorldView vertex.
+-- Idempotent: skips if edge already exists.
+-- =============================================================================
+
+CREATE OR REPLACE FUNCTION connect_belief_pg(
+    p_memory_id    UUID,
+    p_worldview_id UUID,
+    p_confidence   FLOAT DEFAULT 0.8,
+    p_context      TEXT  DEFAULT NULL
+)
+RETURNS BOOLEAN AS $func$
+DECLARE
+    exists_val  BOOL;
+    context_esc TEXT;
+BEGIN
+    context_esc := replace(replace(COALESCE(p_context, ''), '\', '\\'), '''', '\''');
+
+    -- Check both vertices exist
+    EXECUTE format(
+        $q$SELECT EXISTS (
+            SELECT 1 FROM cypher('cognitive_graph', $$
+                MATCH (m:Memory {pg_id: %L}), (w:WorldView {pg_id: %L})
+                RETURN m, w
+            $$) AS (m agtype, w agtype))$q$,
+        p_memory_id::text,
+        p_worldview_id::text
+    ) INTO exists_val;
+
+    IF NOT exists_val THEN
+        RETURN FALSE;  -- one or both vertices missing
+    END IF;
+
+    -- Check edge doesn't already exist
+    EXECUTE format(
+        $q$SELECT EXISTS (
+            SELECT 1 FROM cypher('cognitive_graph', $$
+                MATCH (m:Memory {pg_id: %L})-[r:INFORMS_BELIEF]->(w:WorldView {pg_id: %L})
+                RETURN r
+            $$) AS (r agtype))$q$,
+        p_memory_id::text,
+        p_worldview_id::text
+    ) INTO exists_val;
+
+    IF exists_val THEN
+        RETURN TRUE;  -- already connected, idempotent success
+    END IF;
+
+    -- Create the edge
+    EXECUTE format(
+        $cypher$SELECT * FROM cypher('cognitive_graph', $$
+            MATCH (m:Memory {pg_id: '%s'}), (w:WorldView {pg_id: '%s'})
+            CREATE (m)-[r:INFORMS_BELIEF {
+                confidence: %s,
+                context: '%s'
+            }]->(w)
+        $$) AS (r agtype)$cypher$,
+        p_memory_id::text,
+        p_worldview_id::text,
+        p_confidence,
+        context_esc
+    );
+
+    RETURN TRUE;
+END;
+$func$ LANGUAGE plpgsql;
+
 -- =============================================================================
