@@ -104,10 +104,28 @@ async def run_hdbscan(
             "message": str,
         }
     """
-    hdbscan = _safe_import_hdbscan()
-    np = _import_numpy()
+    try:
+        hdbscan = _safe_import_hdbscan()
+        np = _import_numpy()
+    except ImportError as e:
+        return {
+            "clusters_found": 0,
+            "outliers": 0,
+            "error": str(e),
+            "message": f"Import failed: {e}",
+        }
 
-    mems = await _fetch_embeddings(pool)
+    try:
+        mems = await _fetch_embeddings(pool)
+    except Exception as e:
+        return {
+            "clusters_found": 0,
+            "outliers": 0,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "message": f"Embedding fetch failed: {type(e).__name__}: {e}",
+        }
+
     if len(mems) < min_cluster_size * 2:
         return {
             "clusters_found": 0,
@@ -115,19 +133,29 @@ async def run_hdbscan(
             "message": f"Too few memories ({len(mems)}) for HDBSCAN with min_cluster_size={min_cluster_size}",
         }
 
-    vectors = np.stack([m["vector"] for m in mems])
-    vectors = _normalize(vectors)
+    try:
+        vectors = np.stack([m["vector"] for m in mems])
+        vectors = _normalize(vectors)
 
-    log.info("Running HDBSCAN", n_samples=len(mems), min_cluster_size=min_cluster_size)
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        metric="euclidean",  # on normalized vectors = cosine
-    )
-    labels = clusterer.fit_predict(vectors)
+        log.info("Running HDBSCAN", n_samples=len(mems), min_cluster_size=min_cluster_size)
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            metric="euclidean",  # on normalized vectors = cosine
+        )
+        labels = clusterer.fit_predict(vectors)
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_outliers = int((labels == -1).sum())
-    log.info("HDBSCAN complete", clusters=n_clusters, outliers=n_outliers)
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_outliers = int((labels == -1).sum())
+        log.info("HDBSCAN complete", clusters=n_clusters, outliers=n_outliers)
+    except Exception as e:
+        log.error("HDBSCAN execution failed", error=str(e), error_type=type(e).__name__)
+        return {
+            "clusters_found": 0,
+            "outliers": 0,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "message": f"HDBSCAN execution failed: {type(e).__name__}: {e}",
+        }
 
     # ── Persist to database ─────────────────────────────────────────────────
     async with pool.acquire() as conn:

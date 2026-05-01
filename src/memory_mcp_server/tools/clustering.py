@@ -38,9 +38,19 @@ async def run_clustering(min_cluster_size: int = 8) -> dict:
     """
     _check_hdbscan()
     pool = await db.get_pool()
-    result = await cl.run_hdbscan(pool, min_cluster_size=min_cluster_size)
-    log.info("run_clustering", **result)
-    return result
+    try:
+        result = await cl.run_hdbscan(pool, min_cluster_size=min_cluster_size)
+        log.info("run_clustering", **result)
+        return result
+    except Exception as e:
+        log.error("run_clustering failed", error=str(e), error_type=type(e).__name__)
+        return {
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "message": f"Clustering failed: {type(e).__name__}: {e}",
+            "clusters_found": 0,
+            "outliers": 0,
+        }
 
 
 async def get_clusters() -> list[dict]:
