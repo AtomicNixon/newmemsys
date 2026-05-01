@@ -114,6 +114,61 @@ async def get_clusters() -> list[dict]:
     return await cl.get_clusters(pool)
 
 
+async def get_clusters_priority() -> list[dict]:
+    """
+    Return clusters sorted by priority for naming.
+
+    Priority order:
+      1. Named clusters with declining trend (need review)
+      2. Named clusters below 0.40 threshold (need action)
+      3. Unnamed clusters with highest avg_importance (name these first)
+      4. All others
+
+    Returns slim dicts: cluster_id, label, avg_importance, trend, memory_count, unnamed_rank
+    """
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        """SELECT id, label, hdbscan_label, memory_count, avg_importance
+           FROM memory_clusters
+           ORDER BY avg_importance DESC"""
+    )
+    results = []
+    unnamed_rank = 0
+    for r in rows:
+        d = dict(r)
+        traj = await pool.fetchrow(
+            "SELECT * FROM get_cluster_trajectory($1)", r["id"]
+        )
+        trend = traj["trend"] if traj else "unknown"
+        prev = traj["previous_importance"] if traj else None
+
+        # Priority scoring
+        priority = 0
+        if d.get("label") and trend == "declining":
+            priority = 1
+        elif d.get("label") and d["avg_importance"] < 0.40:
+            priority = 2
+        elif not d.get("label"):
+            unnamed_rank += 1
+            priority = 3
+        else:
+            priority = 4
+
+        results.append({
+            "cluster_id": str(d["id"]),
+            "label": d.get("label") or f"cluster_{d['hdbscan_label']}",
+            "avg_importance": round(d["avg_importance"], 3),
+            "trend": trend,
+            "previous_importance": round(prev, 3) if prev else None,
+            "memory_count": d["memory_count"],
+            "unnamed_rank": unnamed_rank if not d.get("label") else None,
+            "priority": priority,
+        })
+
+    results.sort(key=lambda x: (x["priority"], -x["avg_importance"]))
+    return results
+
+
 async def cluster_detail(cluster_id: str, rep_limit: int = 5) -> dict:
     """
     Full detail for a single cluster:

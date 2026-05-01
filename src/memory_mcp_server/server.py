@@ -373,6 +373,16 @@ TOOLS = [
         inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
+        name="get_clusters_priority",
+        description=(
+            "Return clusters sorted by naming priority. "
+            "Priority: declining named clusters → below-threshold named → "
+            "highest-avg unnamed → all others. "
+            "Use this to decide which cluster to name next."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
         name="cluster_detail",
         description=(
             "Full detail for a single cluster: metadata, trajectory, and "
@@ -620,6 +630,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "connect_belief":          return await gc_tools.connect_belief(**args)
         case "run_clustering":          return await cl_tools.run_clustering(**args)
         case "get_clusters":            return await cl_tools.get_clusters()
+        case "get_clusters_priority":   return await cl_tools.get_clusters_priority()
         case "cluster_detail":          return await cl_tools.cluster_detail(**args)
         case "propose_cluster_action":  return await cl_tools.propose_cluster_action(**args)
         case "clustering_diagnostic":   return await cl_tools.clustering_diagnostic()
