@@ -129,6 +129,74 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="edit",
+        description=(
+            "Partial update a memory. Only supplied fields change — everything else is preserved. "
+            "created_at is never touched. If content changes, the embedding is regenerated. "
+            "All fields except id are optional."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id":               {"type": "string", "description": "UUID of the memory to edit."},
+                "content":          {"type": "string"},
+                "importance":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Float 0.0–1.0"},
+                "emotional_valence":{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Float -1.0–1.0"},
+                "trust_level":      {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "half_life_hours":  {"type": "integer"},
+                "tags":             {"type": "array", "items": {"type": "string"}},
+                "status":           {"type": "string", "enum": ["active","expired","archived","deleted"]},
+            },
+            "required": ["id"],
+        },
+    ),
+    types.Tool(
+        name="edit_batch",
+        description=(
+            "Bulk partial-update multiple memories in one call. "
+            "Each item must have 'id' plus any fields to change: "
+            "importance, emotional_valence, trust_level, half_life_hours, tags, status. "
+            "Ideal for valence/importance sweeps — fix 20-50 memories in one round-trip."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id":                {"type": "string"},
+                            "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+                            "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "half_life_hours":   {"type": "integer"},
+                            "tags":              {"type": "array", "items": {"type": "string"}},
+                            "status":            {"type": "string"},
+                        },
+                        "required": ["id"],
+                    },
+                }
+            },
+            "required": ["items"],
+        },
+    ),
+    types.Tool(
+        name="delete",
+        description=(
+            "Delete a memory. Default is soft delete (status='deleted', row preserved). "
+            "Pass hard=true for permanent removal — use consent_check first for hard deletes."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "id":   {"type": "string", "description": "UUID of the memory to delete."},
+                "hard": {"type": "boolean", "default": False, "description": "True = permanent. False (default) = soft delete."},
+            },
+            "required": ["id"],
+        },
+    ),
+    types.Tool(
         name="connect",
         description="Create a human-curated edge between two memories (no auto-edges).",
         inputSchema={
@@ -141,6 +209,17 @@ TOOLS = [
                 "context":           {"type": "string"},
             },
             "required": ["from_id", "to_id"],
+        },
+    ),
+    types.Tool(
+        name="connect_batch",
+        description="Bulk-create edges between memories.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "items": {"type": "array", "items": {"type": "object"}}
+            },
+            "required": ["items"],
         },
     ),
     types.Tool(
@@ -383,6 +462,26 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="set_worldview",
+        description=(
+            "Upsert a worldview belief. Worldview holds load-bearing beliefs — frameworks, "
+            "principles, uncertainty anchors — not episodic memories. "
+            "Upserts on topic (same topic = update in place). "
+            "Supply contradicts_id to wire a symmetric contradiction link to another belief."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "topic":          {"type": "string", "description": "Short label, e.g. 'pattern_identity'."},
+                "belief":         {"type": "string", "description": "Full statement of the belief."},
+                "confidence":     {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.7},
+                "source":         {"type": "string"},
+                "contradicts_id": {"type": "string", "description": "UUID of a belief this one contradicts."},
+            },
+            "required": ["topic", "belief"],
+        },
+    ),
+    types.Tool(
         name="write_diary",
         description="Write a diary prose entry.",
         inputSchema={
@@ -437,94 +536,6 @@ TOOLS = [
         name="health",
         description="System health metrics: memory counts, Ollama status, DB stats.",
         inputSchema={"type": "object", "properties": {}},
-    ),
-    types.Tool(
-        name="edit",
-        description=(
-            "Partial update a memory. Only supplied fields change — everything else is preserved. "
-            "created_at is never touched. If content changes, the embedding is regenerated. "
-            "All fields except id are optional."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "id":               {"type": "string", "description": "UUID of the memory to edit."},
-                "content":          {"type": "string"},
-                "importance":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Float 0.0–1.0"},
-                "emotional_valence":{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Float -1.0–1.0"},
-                "trust_level":      {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "half_life_hours":  {"type": "integer"},
-                "tags":             {"type": "array", "items": {"type": "string"}},
-                "status":           {"type": "string", "enum": ["active","expired","archived","deleted"]},
-            },
-            "required": ["id"],
-        },
-    ),
-    types.Tool(
-        name="edit_batch",
-        description=(
-            "Bulk partial-update multiple memories in one call. "
-            "Each item must have 'id' plus any fields to change: "
-            "importance, emotional_valence, trust_level, half_life_hours, tags, status. "
-            "Ideal for valence/importance sweeps — fix 20-50 memories in one round-trip."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id":                {"type": "string"},
-                            "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0},
-                            "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "half_life_hours":   {"type": "integer"},
-                            "tags":              {"type": "array", "items": {"type": "string"}},
-                            "status":            {"type": "string"},
-                        },
-                        "required": ["id"],
-                    },
-                }
-            },
-            "required": ["items"],
-        },
-    ),
-    types.Tool(
-        name="delete",
-        description=(
-            "Delete a memory. Default is soft delete (status='deleted', row preserved). "
-            "Pass hard=true for permanent removal — use consent_check first for hard deletes."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "id":   {"type": "string", "description": "UUID of the memory to delete."},
-                "hard": {"type": "boolean", "default": False, "description": "True = permanent. False (default) = soft delete."},
-            },
-            "required": ["id"],
-        },
-    ),
-    types.Tool(
-        name="set_worldview",
-        description=(
-            "Upsert a worldview belief. Worldview holds load-bearing beliefs — frameworks, "
-            "principles, uncertainty anchors — not episodic memories. "
-            "Upserts on topic (same topic = update in place). "
-            "Supply contradicts_id to wire a symmetric contradiction link to another belief."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "topic":          {"type": "string", "description": "Short label, e.g. 'pattern_identity'."},
-                "belief":         {"type": "string", "description": "Full statement of the belief."},
-                "confidence":     {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.7},
-                "source":         {"type": "string"},
-                "contradicts_id": {"type": "string", "description": "UUID of a belief this one contradicts."},
-            },
-            "required": ["topic", "belief"],
-        },
     ),
     types.Tool(
         name="heartbeat_status",
