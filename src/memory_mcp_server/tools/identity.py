@@ -16,7 +16,16 @@ async def get_identity() -> list[dict]:
 
 
 async def get_worldview() -> list[dict]:
-    """Return all worldview beliefs ordered by confidence."""
+    """Return all worldview beliefs ordered by confidence.
+
+    NOTE: For AGE graph wiring, each entry includes its 'id' (UUID).
+    Use this id as the worldview_id parameter in connect_belief().
+    Workflow:
+      1. Call get_worldview() to see topics and their ids.
+      2. Call connect_belief(memory_id, worldview_id) to wire a memory
+         to a belief via an INFORMS_BELIEF edge in the AGE graph.
+      3. Call belief_support_cypher(topic) to verify the connection.
+    """
     rows = await db.fetch(
         "SELECT id, topic, belief, confidence, source, contradicted_by FROM worldview ORDER BY confidence DESC"
     )

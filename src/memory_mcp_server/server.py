@@ -268,7 +268,11 @@ TOOLS = [
     ),
     types.Tool(
         name="get_worldview",
-        description="Return all worldview beliefs.",
+        description=(
+            "Return all worldview beliefs ordered by confidence. "
+            "Each entry includes its id (UUID) — use this as worldview_id in connect_belief(). "
+            "Workflow: get_worldview() → connect_belief(memory_id, worldview_id) → belief_support_cypher(topic)."
+        ),
         inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
