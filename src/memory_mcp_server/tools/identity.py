@@ -15,21 +15,35 @@ async def get_identity() -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-async def get_worldview() -> list[dict]:
-    """Return all worldview beliefs ordered by confidence.
+async def get_worldview(limit: Optional[int] = None, full_text: bool = False) -> list[dict]:
+    """Return worldview beliefs ordered by confidence.
 
-    NOTE: For AGE graph wiring, each entry includes its 'id' (UUID).
+    limit:      return only top N beliefs (default: all)
+    full_text:  if False, belief text is truncated to 200 chars
+                and source is omitted. Use full_text=True only
+                when you need the complete belief statement.
+
+    For AGE graph wiring, each entry includes its 'id' (UUID).
     Use this id as the worldview_id parameter in connect_belief().
-    Workflow:
-      1. Call get_worldview() to see topics and their ids.
-      2. Call connect_belief(memory_id, worldview_id) to wire a memory
-         to a belief via an INFORMS_BELIEF edge in the AGE graph.
-      3. Call belief_support_cypher(topic) to verify the connection.
     """
-    rows = await db.fetch(
-        "SELECT id, topic, belief, confidence, source, contradicted_by FROM worldview ORDER BY confidence DESC"
+    sql = (
+        "SELECT id, topic, belief, confidence, source, contradicted_by "
+        "FROM worldview ORDER BY confidence DESC"
     )
-    return [_row_to_dict(r) for r in rows]
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+
+    rows = await db.fetch(sql)
+    results = []
+    for r in rows:
+        d = _row_to_dict(r)
+        if not full_text:
+            belief = d.get("belief", "")
+            if belief and len(belief) > 200:
+                d["belief"] = belief[:200] + "... [truncated, use full_text=True]"
+            d.pop("source", None)
+        results.append(d)
+    return results
 
 
 async def set_worldview(

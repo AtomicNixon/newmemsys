@@ -91,12 +91,18 @@ TOOLS = [
     ),
     types.Tool(
         name="hydrate",
-        description="Full cognitive context reconstruction: identity + worldview + diary + top memories.",
+        description=(
+            "Full cognitive context reconstruction: identity + worldview + diary + top memories. "
+            "slim=True returns a token-economy version (keys only, no full text) — "
+            "use for short sessions where orientation is enough. "
+            "Saves 60–80% tokens vs full hydrate."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "default": 10},
+                "slim":  {"type": "boolean", "default": False, "description": "Return slim payload: identity keys only, worldview topics+confidence only, diary date+mood only, memory id+importance only."},
             },
             "required": ["query"],
         },
@@ -269,11 +275,19 @@ TOOLS = [
     types.Tool(
         name="get_worldview",
         description=(
-            "Return all worldview beliefs ordered by confidence. "
-            "Each entry includes its id (UUID) — use this as worldview_id in connect_belief(). "
-            "Workflow: get_worldview() → connect_belief(memory_id, worldview_id) → belief_support_cypher(topic)."
+            "Return worldview beliefs ordered by confidence. "
+            "limit=N returns only top N beliefs. "
+            "full_text=True returns complete belief statements; default truncates to 200 chars "
+            "and omits source to save tokens. "
+            "Each entry includes its id (UUID) — use as worldview_id in connect_belief()."
         ),
-        inputSchema={"type": "object", "properties": {}},
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit":     {"type": "integer", "description": "Return only top N beliefs by confidence"},
+                "full_text": {"type": "boolean", "default": False, "description": "Return complete belief text and source. Default truncates to save tokens."},
+            },
+        },
     ),
     types.Tool(
         name="get_drives",

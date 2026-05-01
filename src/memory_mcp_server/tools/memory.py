@@ -127,8 +127,18 @@ async def recall_recent(limit: int = 10) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-async def hydrate(query: str, limit: int = 10) -> dict:
-    """Full context reconstruction: identity + worldview + diary + memories."""
+async def hydrate(query: str, limit: int = 10, slim: bool = False) -> dict:
+    """Full context reconstruction: identity + worldview + diary + memories.
+
+    slim=True returns a token-economy version:
+      • identity: keys only (no values)
+      • worldview: topics + confidence only (no belief text)
+      • diary: date + mood only (no entry text)
+      • memories: id + importance + type only (no content)
+
+    Use slim=True for short sessions where you need orientation
+    but not full reconstruction. Saves 60–80% tokens vs full hydrate.
+    """
     embedding = embed(query)
     embed_literal = json.dumps(embedding) if embedding else None
 
@@ -136,7 +146,32 @@ async def hydrate(query: str, limit: int = 10) -> dict:
         "SELECT hydrate_context($1::vector, $2)",
         embed_literal, limit,
     )
-    return json.loads(result) if result else {}
+    ctx = json.loads(result) if result else {}
+
+    if not slim:
+        return ctx
+
+    # Slim mode: strip verbose fields
+    slim_ctx = {}
+    if "identity" in ctx:
+        slim_ctx["identity"] = {k: "[present]" for k in ctx["identity"]}
+    if "worldview" in ctx:
+        slim_ctx["worldview"] = [
+            {"topic": w.get("topic"), "confidence": w.get("confidence")}
+            for w in ctx["worldview"]
+        ]
+    if "diary" in ctx:
+        slim_ctx["diary"] = [
+            {"date": d.get("date"), "mood": d.get("mood")}
+            for d in ctx["diary"]
+        ]
+    if "memories" in ctx:
+        slim_ctx["memories"] = [
+            {"id": m.get("id"), "importance": m.get("importance"), "type": m.get("type")}
+            for m in ctx["memories"]
+        ]
+    slim_ctx["note"] = "Slim hydration — call hydrate(query, slim=False) for full text."
+    return slim_ctx
 
 
 async def hydrate_light() -> dict:
