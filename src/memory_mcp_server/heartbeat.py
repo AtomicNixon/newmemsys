@@ -272,7 +272,14 @@ async def _task_maintenance(pool: asyncpg.Pool) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _task_decay(pool: asyncpg.Pool) -> dict:
-    # Memories not touched in 24+ hours
+    """Decay pass with cluster-aware consent routing.
+
+    Standard decay applies to all old memories.
+    Clusters with avg_importance < 0.40 are flagged to the consent queue
+    for Bob's review — no automatic cluster decisions.
+    Outliers (unclustered) get standard decay without consent.
+    """
+    # ── Standard decay on all old memories ────────────────────────────────────
     old_memories = await pool.fetch(
         """SELECT id FROM memories
            WHERE status = 'active'
@@ -280,7 +287,7 @@ async def _task_decay(pool: asyncpg.Pool) -> dict:
            LIMIT 200"""
     )
     if not old_memories:
-        return {"task": "decay", "decayed": 0}
+        return {"task": "decay", "decayed": 0, "clusters_flagged": 0}
 
     decayed = 0
     importances = []
@@ -290,11 +297,62 @@ async def _task_decay(pool: asyncpg.Pool) -> dict:
             decayed += 1
             importances.append(float(result))
 
+    # ── Cluster consent check (Bob's threshold: 0.40) ─────────────────────────
+    clusters_flagged = 0
+    try:
+        cluster_rows = await pool.fetch(
+            """SELECT id, label, hdbscan_label, avg_importance
+               FROM memory_clusters
+               WHERE avg_importance < 0.40
+                 AND last_run_at > NOW() - INTERVAL '7 days'"""
+        )
+        for cr in cluster_rows:
+            # Check if already in consent queue for this cluster
+            existing = await pool.fetchval(
+                """SELECT 1 FROM outbox
+                   WHERE action LIKE 'cluster_%'
+                     AND payload->>'cluster_id' = $1
+                     AND status = 'pending'
+                   LIMIT 1""",
+                str(cr["id"]),
+            )
+            if existing:
+                continue
+
+            label = cr["label"] or f"cluster_{cr['hdbscan_label']}"
+            traj = await pool.fetchrow(
+                "SELECT * FROM get_cluster_trajectory($1)", cr["id"]
+            )
+            trend = traj["trend"] if traj else "unknown"
+            prev = traj["previous_importance"] if traj else None
+
+            await pool.execute(
+                """INSERT INTO outbox (action, payload, ai_reason, status)
+                   VALUES ($1, $2, $3, 'pending')""",
+                "cluster_review",
+                json.dumps({
+                    "cluster_id": str(cr["id"]),
+                    "cluster_label": label,
+                    "avg_importance": round(cr["avg_importance"], 3),
+                    "previous_importance": round(prev, 3) if prev else None,
+                    "trend": trend,
+                    "action_options": ["preserve", "accelerate", "hold"],
+                }),
+                f"Cluster '{label}' avg_importance={cr['avg_importance']:.2f} (trend: {trend}). "
+                f"Below 0.40 threshold — review needed.",
+            )
+            clusters_flagged += 1
+            log.info("Cluster flagged for consent review",
+                     cluster=label, avg_importance=cr["avg_importance"])
+    except Exception as e:
+        log.warning("Cluster consent check failed", error=str(e))
+
     result = {
         "task": "decay",
         "decayed": decayed,
         "min_importance": round(min(importances), 4) if importances else None,
         "max_importance": round(max(importances), 4) if importances else None,
+        "clusters_flagged": clusters_flagged,
     }
     log.info("Decay complete", **{k: v for k, v in result.items() if k != "task"})
     return result

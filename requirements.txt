@@ -1,5 +1,5 @@
 # Memory System Dependencies
-# Phase 1 + Phase 2 (Apache AGE graph layer)
+# Phase 1 + Phase 2 (AGE) + Phase 3 (HDBSCAN clustering)
 # Date: 2026-04-04
 
 # MCP SDK (updated — mcp 1.x uses mcp.server.stdio)

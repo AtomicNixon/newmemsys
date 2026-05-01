@@ -34,6 +34,7 @@ from memory_mcp_server.tools import (
     consent as consent_tools,
     health as health_tools,
     heartbeat as hb_tools,
+    clustering as cl_tools,
 )
 
 log = structlog.get_logger(__name__)
@@ -266,7 +267,67 @@ TOOLS = [
             "required": ["memory_id", "worldview_id"],
         },
     ),
-    # ── end Phase 2 graph tools ───────────────────────────────────────────────
+    # ── Phase 3: HDBSCAN clustering ───────────────────────────────────────────
+    types.Tool(
+        name="run_clustering",
+        description=(
+            "Run HDBSCAN on all active memory embeddings and persist clusters. "
+            "min_cluster_size=8 is Bob's recommended default. "
+            "Creates cluster rows, memberships, trajectory snapshots, and "
+            "updates AGE vertices with cluster_id. Safe to re-run — upserts in place."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_cluster_size": {"type": "integer", "default": 8},
+            },
+        },
+    ),
+    types.Tool(
+        name="get_clusters",
+        description=(
+            "List all HDBSCAN clusters with current stats and importance trajectory. "
+            "Ordered by avg_importance descending. "
+            "For unnamed clusters, use cluster_detail() to see representative memories, "
+            "then name them yourself — no auto-labeling."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
+        name="cluster_detail",
+        description=(
+            "Full detail for a single cluster: metadata, trajectory, and "
+            "representative memories (top N closest to centroid). "
+            "Use this to name a cluster. Bob names them — no auto-labeling."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "cluster_id": {"type": "string"},
+                "rep_limit":  {"type": "integer", "default": 5, "description": "Number of representative memories to return"},
+            },
+            "required": ["cluster_id"],
+        },
+    ),
+    types.Tool(
+        name="propose_cluster_action",
+        description=(
+            "Queue a cluster-level action to the consent outbox. "
+            "action: preserve (stop decay) | accelerate (increase decay) | hold (no change). "
+            "The consent item includes cluster name, avg importance + trajectory, "
+            "representative memories, and action options. Only Bob decides."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "cluster_id": {"type": "string"},
+                "action":     {"type": "string", "enum": ["preserve", "accelerate", "hold"]},
+                "ai_reason":  {"type": "string"},
+            },
+            "required": ["cluster_id", "action"],
+        },
+    ),
+    # ── end Phase 3 clustering tools ──────────────────────────────────────────
     types.Tool(
         name="get_identity",
         description="Return all identity keys ordered by priority.",
@@ -537,6 +598,10 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "path_between_cypher":     return await gc_tools.path_between_cypher(**args)
         case "age_graph_status":        return await gc_tools.age_graph_status()
         case "connect_belief":          return await gc_tools.connect_belief(**args)
+        case "run_clustering":          return await cl_tools.run_clustering(**args)
+        case "get_clusters":            return await cl_tools.get_clusters()
+        case "cluster_detail":          return await cl_tools.cluster_detail(**args)
+        case "propose_cluster_action":  return await cl_tools.propose_cluster_action(**args)
         case "connect_batch":      return await graph_tools.connect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()
         case "get_worldview":      return await id_tools.get_worldview()

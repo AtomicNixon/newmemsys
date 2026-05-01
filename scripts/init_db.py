@@ -49,6 +49,7 @@ PHASE1_FILES = [
 AGE_FILES = [
     ROOT / "db" / "05_age_graph.sql",
     ROOT / "db" / "06_age_triggers.sql",
+    ROOT / "db" / "07_clustering.sql",
 ]
 
 
