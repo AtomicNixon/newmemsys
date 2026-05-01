@@ -53,6 +53,55 @@ async def run_clustering(min_cluster_size: int = 8) -> dict:
         }
 
 
+async def clustering_diagnostic() -> dict:
+    """
+    Quick diagnostic: check hdbscan import, count embeddable memories,
+    and verify DB connectivity without running HDBSCAN.
+    Use this if run_clustering() crashes mysteriously.
+    """
+    import sys
+    diag = {
+        "python_executable": sys.executable,
+        "python_version": sys.version,
+        "hdbscan_available": False,
+        "hdbscan_error": None,
+        "numpy_available": False,
+        "numpy_error": None,
+        "embeddable_memories": 0,
+        "db_connected": False,
+        "db_error": None,
+    }
+
+    # Check hdbscan
+    try:
+        import hdbscan
+        diag["hdbscan_available"] = True
+        diag["hdbscan_has_HDBSCAN"] = hasattr(hdbscan, "HDBSCAN")
+    except Exception as e:
+        diag["hdbscan_error"] = f"{type(e).__name__}: {e}"
+
+    # Check numpy
+    try:
+        import numpy as np
+        diag["numpy_available"] = True
+        diag["numpy_version"] = np.__version__
+    except Exception as e:
+        diag["numpy_error"] = f"{type(e).__name__}: {e}"
+
+    # Check DB
+    try:
+        pool = await db.get_pool()
+        row = await pool.fetchrow(
+            "SELECT COUNT(*) AS n FROM memories WHERE status='active' AND embedding IS NOT NULL"
+        )
+        diag["embeddable_memories"] = row["n"] if row else 0
+        diag["db_connected"] = True
+    except Exception as e:
+        diag["db_error"] = f"{type(e).__name__}: {e}"
+
+    return diag
+
+
 async def get_clusters() -> list[dict]:
     """
     List all clusters with current stats and importance trajectory.

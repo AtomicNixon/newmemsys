@@ -327,6 +327,15 @@ TOOLS = [
             "required": ["cluster_id", "action"],
         },
     ),
+    types.Tool(
+        name="clustering_diagnostic",
+        description=(
+            "Diagnostic tool for clustering issues. Checks hdbscan import, "
+            "numpy version, DB connectivity, and embeddable memory count — "
+            "without running HDBSCAN. Use this if run_clustering() crashes."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
     # ── end Phase 3 clustering tools ──────────────────────────────────────────
     types.Tool(
         name="get_identity",
@@ -602,6 +611,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "get_clusters":            return await cl_tools.get_clusters()
         case "cluster_detail":          return await cl_tools.cluster_detail(**args)
         case "propose_cluster_action":  return await cl_tools.propose_cluster_action(**args)
+        case "clustering_diagnostic":   return await cl_tools.clustering_diagnostic()
         case "connect_batch":      return await graph_tools.connect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()
         case "get_worldview":      return await id_tools.get_worldview()
