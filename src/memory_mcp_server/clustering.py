@@ -6,7 +6,7 @@ Usage:
     result = await run_hdbscan(pool, min_cluster_size=8)
 
 Dependencies:
-    pip install hdbscan
+    pip install hdbscan numpy
 
 Design:
     • Fetches all active memories with embeddings
@@ -26,7 +26,6 @@ import json
 from typing import Any
 
 import asyncpg
-import numpy as np
 import structlog
 
 log = structlog.get_logger(__name__)
@@ -37,18 +36,32 @@ CONSENT_THRESHOLD = 0.40
 
 
 def _safe_import_hdbscan():
+    """Lazy import — only called when run_hdbscan() is invoked."""
     try:
         import hdbscan
         return hdbscan
-    except ImportError:
+    except ImportError as e:
         raise ImportError(
             "hdbscan is required for Phase 3 clustering. "
-            "Install:  pip install hdbscan"
-        )
+            "Install:  C:/Python312/python.exe -m pip install hdbscan"
+        ) from e
+
+
+def _import_numpy():
+    """Lazy import numpy — module loads even if numpy is temporarily missing."""
+    try:
+        import numpy as np
+        return np
+    except ImportError as e:
+        raise ImportError(
+            "numpy is required for Phase 3 clustering. "
+            "Install:  C:/Python312/python.exe -m pip install numpy"
+        ) from e
 
 
 async def _fetch_embeddings(pool: asyncpg.Pool) -> list[dict]:
     """Fetch all active memories with their embeddings."""
+    np = _import_numpy()
     rows = await pool.fetch(
         """SELECT id, content, importance, emotional_valence,
                   embedding::text AS embedding_text
@@ -68,8 +81,9 @@ async def _fetch_embeddings(pool: asyncpg.Pool) -> list[dict]:
     return results
 
 
-def _normalize(vectors: np.ndarray) -> np.ndarray:
+def _normalize(vectors):
     """L2-normalize for cosine-distance HDBSCAN."""
+    np = _import_numpy()
     norms = np.linalg.norm(vectors, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return vectors / norms
@@ -91,6 +105,7 @@ async def run_hdbscan(
         }
     """
     hdbscan = _safe_import_hdbscan()
+    np = _import_numpy()
 
     mems = await _fetch_embeddings(pool)
     if len(mems) < min_cluster_size * 2:

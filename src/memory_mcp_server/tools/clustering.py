@@ -13,6 +13,18 @@ from memory_mcp_server import clustering as cl
 log = structlog.get_logger(__name__)
 
 
+def _check_hdbscan() -> None:
+    """Verify hdbscan is available before running clustering."""
+    try:
+        import hdbscan  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "hdbscan is not installed in the Python environment running the MCP server. "
+            "Install it with:  C:/Python312/python.exe -m pip install hdbscan  "
+            "Then fully restart the MCP server process (Claude Code restart may not be enough)."
+        ) from e
+
+
 async def run_clustering(min_cluster_size: int = 8) -> dict:
     """
     Run HDBSCAN on all active memory embeddings and persist clusters.
@@ -24,6 +36,7 @@ async def run_clustering(min_cluster_size: int = 8) -> dict:
     Returns:
         clusters_found, outliers, cluster_labels, message
     """
+    _check_hdbscan()
     pool = await db.get_pool()
     result = await cl.run_hdbscan(pool, min_cluster_size=min_cluster_size)
     log.info("run_clustering", **result)
