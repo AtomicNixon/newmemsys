@@ -274,6 +274,7 @@ DECLARE
     belief_esc  TEXT;
     source_esc  TEXT;
 BEGIN
+    EXECUTE 'LOAD ''age''';
     FOR wv IN
         SELECT id, topic, belief, confidence, source
         FROM worldview
@@ -333,7 +334,7 @@ BEGIN
 
     RETURN QUERY SELECT v_count, u_count, s_count;
 END;
-$func$ LANGUAGE plpgsql;
+$func$ LANGUAGE plpgsql SET search_path = ag_catalog, public;
 
 -- =============================================================================
 -- HELPER FUNCTION: connect_belief_pg(memory_id UUID, worldview_id UUID)
@@ -352,6 +353,7 @@ DECLARE
     exists_val  BOOL;
     context_esc TEXT;
 BEGIN
+    EXECUTE 'LOAD ''age''';
     context_esc := replace(replace(COALESCE(p_context, ''), '\', '\\'), '''', '\''');
 
     -- Check both vertices exist
@@ -401,6 +403,6 @@ BEGIN
 
     RETURN TRUE;
 END;
-$func$ LANGUAGE plpgsql;
+$func$ LANGUAGE plpgsql SET search_path = ag_catalog, public;
 
 -- =============================================================================
