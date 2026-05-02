@@ -417,6 +417,23 @@ TOOLS = [
         },
     ),
     types.Tool(
+        name="assign_memories_to_cluster",
+        description=(
+            "Bulk-assign multiple memories to a cluster in one call. "
+            "Pass a list of memory_ids and a cluster_id — all memories are "
+            "assigned at once. Use this for the drawer→room workflow instead "
+            "of updating memories one at a time."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "cluster_id":  {"type": "string", "description": "UUID of the target cluster"},
+                "memory_ids":  {"type": "array", "items": {"type": "string"}, "description": "List of memory UUIDs to assign"},
+            },
+            "required": ["cluster_id", "memory_ids"],
+        },
+    ),
+    types.Tool(
         name="clustering_diagnostic",
         description=(
             "Diagnostic tool for clustering issues. Checks hdbscan import, "
@@ -633,6 +650,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "get_clusters_priority":   return await cl_tools.get_clusters_priority()
         case "cluster_detail":          return await cl_tools.cluster_detail(**args)
         case "propose_cluster_action":  return await cl_tools.propose_cluster_action(**args)
+        case "assign_memories_to_cluster": return await cl_tools.assign_memories_to_cluster(**args)
         case "clustering_diagnostic":   return await cl_tools.clustering_diagnostic()
         case "connect_batch":      return await graph_tools.connect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()

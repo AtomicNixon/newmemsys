@@ -205,3 +205,69 @@ async def propose_cluster_action(
     """
     pool = await db.get_pool()
     return await cl.propose_cluster_action(pool, cluster_id, action, ai_reason)
+
+
+async def assign_memories_to_cluster(
+    cluster_id: str,
+    memory_ids: list[str],
+) -> dict:
+    """
+    Bulk-assign multiple memories to a cluster in one call.
+
+    This is the batch operation for the drawer→room workflow:
+    instead of updating one memory at a time, pass a list of
+    memory IDs and assign them all to the same cluster.
+
+    Returns: assigned count, skipped count (already in cluster),
+             cluster label, cluster memory count after assignment.
+    """
+    pool = await db.get_pool()
+
+    # Verify cluster exists
+    cluster = await pool.fetchrow(
+        "SELECT id, label, memory_count FROM memory_clusters WHERE id = $1",
+        cluster_id,
+    )
+    if not cluster:
+        return {"error": f"Cluster {cluster_id} not found"}
+
+    assigned = 0
+    skipped = 0
+    for mem_id in memory_ids:
+        # Check memory exists and is active
+        mem = await pool.fetchrow(
+            "SELECT id FROM memories WHERE id = $1 AND status = 'active'",
+            mem_id,
+        )
+        if not mem:
+            continue
+
+        # Upsert membership
+        result = await pool.execute(
+            """INSERT INTO cluster_membership (memory_id, cluster_id, distance_to_centroid)
+               VALUES ($1, $2, NULL)
+               ON CONFLICT (memory_id, cluster_id) DO NOTHING""",
+            mem_id, cluster_id,
+        )
+        if result == "INSERT 0 0":
+            skipped += 1
+        else:
+            assigned += 1
+
+    # Update cluster memory count
+    new_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM cluster_membership WHERE cluster_id = $1",
+        cluster_id,
+    )
+    await pool.execute(
+        "UPDATE memory_clusters SET memory_count = $1 WHERE id = $2",
+        new_count, cluster_id,
+    )
+
+    return {
+        "cluster_id": cluster_id,
+        "cluster_label": cluster["label"] or f"cluster_{cluster_id[:8]}",
+        "assigned": assigned,
+        "skipped": skipped,
+        "total_memories": new_count,
+    }
