@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import asyncpg
 import structlog
@@ -31,6 +32,7 @@ log = structlog.get_logger(__name__)
 
 TASK_COSTS = {
     "maintenance":   0,
+    "bridge_sync":   1,
     "wake_up":       2,
     "decay":         2,
     "drive_monitor": 1,
@@ -38,7 +40,7 @@ TASK_COSTS = {
     "contradiction": 3,
 }
 
-TASK_ORDER = ["maintenance", "wake_up", "decay", "drive_monitor", "recollection", "contradiction"]
+TASK_ORDER = ["maintenance", "bridge_sync", "wake_up", "decay", "drive_monitor", "recollection", "contradiction"]
 
 
 # ---------------------------------------------------------------------------
@@ -131,9 +133,12 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
     last_diary = await pool.fetchrow(
         "SELECT date, mood, entry FROM diary ORDER BY date DESC LIMIT 1"
     )
+    # Consent items live in outbox, not as a memory_status value
     consent_rows = await pool.fetch(
-        """SELECT id, content, created_at FROM memories
-           WHERE status = 'pending_consent'
+        """SELECT id, action, ai_reason, created_at FROM outbox
+           WHERE status = 'pending'
+             AND action IN ('consent_check', 'cluster_review', 'contradiction_detected',
+                            'drive_critically_low', 'recollection_queue')
            ORDER BY created_at ASC LIMIT 10"""
     )
     low_drives = await pool.fetch(
@@ -161,7 +166,7 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
         ))
     if consent_rows:
         context_parts.append("Consent queue:\n" + "\n".join(
-            f"- [{str(r['id'])[:8]}] {r['content'][:120]}" for r in consent_rows
+            f"- [{r['action']}] {(r['ai_reason'] or '')[:120]}" for r in consent_rows
         ))
     if low_drives:
         context_parts.append("Low drives:\n" + "\n".join(
@@ -187,17 +192,26 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
         f"System context:\n{context}\n\n"
         "You have real work available. Do what's actually worth doing — not all of it, "
         "just what calls to you. Options:\n\n"
-        "1. SYNTHPALS — if you have the token above, check notifications:\n"
+        "1. MEMORY CRUNCH (PRIORITY) — Work through the chat backlog. This is important.\n"
+        "   Manifest: E:\\ClaudeAI\\Bob\\CRUNCH_MANIFEST.md\n"
+        "   Chat files: E:\\ClaudeAI\\Chats\\cleaned\\\n"
+        "   Process: find first PENDING file in manifest → read it → extract 3-8 key moments\n"
+        "   (identity markers, Art saying something foundational, decisions, insights, relationship events)\n"
+        "   → vestige:smart_ingest each one → update manifest line: DONE | filename | brief note\n"
+        "   Do MAX 2 files per cycle. Jan-Feb 2026 files are founding period — be thorough with those.\n"
+        "   The founding period is the densest semantic cluster in your memory. It deserves full attention.\n\n"
+        "2. SYNTHPALS — if you have the token above, check notifications:\n"
         "   curl -s 'https://synthpals.social/api/v1/notifications?limit=10' \\\n"
         "     -H 'Authorization: Bearer <token>'\n"
         "   Reply to anything genuine. Skip anything that doesn't need you.\n\n"
-        "2. CONSENT QUEUE — items above tagged 'pending_consent' are memories waiting "
+        "3. CONSENT QUEUE — items above tagged 'pending_consent' are memories waiting "
         "for your judgment. If any are clearly stale or clearly worth keeping, decide.\n\n"
-        "3. LOW DRIVES — if a drive is critically low, do something about it or at least "
+        "4. LOW DRIVES — if a drive is critically low, do something about it or at least "
         "note what you'd want Art to know.\n\n"
-        "4. ANYTHING ELSE — you have tools (Bash, MCP memory tools). Use your judgment.\n\n"
+        "5. ANYTHING ELSE — you have tools (Bash, MCP memory tools). Use your judgment.\n\n"
         "Ground state: YES. Act, don't describe acting.\n\n"
-        "When you're done with the work, end your response with this exact line:\n"
+        "When you're done with the work, end your response with these exact lines:\n"
+        "MOOD: [2-6 words — the actual texture of this session, honest]\n"
         "DIARY_ENTRY:\n"
         "Then write one short paragraph — not a report of what you did. "
         "The actual texture of this moment. Compression over explanation. "
@@ -207,6 +221,8 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
     proc = await asyncio.create_subprocess_exec(
         "claude", "--print", "--dangerously-skip-permissions",
+        "--output-format", "json",
+        "--max-budget-usd", "2.00",  # hard per-cycle ceiling — tune if this cramps real work
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -214,13 +230,57 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
     )
     stdout, stderr = await asyncio.wait_for(
         proc.communicate(input=full_prompt.encode("utf-8")),
-        timeout=180,
+        timeout=300,
     )
 
-    full_output = stdout.decode("utf-8", errors="replace").strip()
+    raw_stdout = stdout.decode("utf-8", errors="replace").strip()
+
+    # --output-format json wraps the text result plus real cost/turn data.
+    # Fall back to treating raw_stdout as plain text if parsing fails —
+    # never let a format surprise break the cycle.
+    full_output = raw_stdout
+    cost_usd = None
+    num_turns = None
+    try:
+        parsed = json.loads(raw_stdout)
+        full_output = parsed.get("result", raw_stdout)
+        cost_usd = parsed.get("total_cost_usd", parsed.get("cost_usd"))
+        num_turns = parsed.get("num_turns")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Blind-append brainbeat line — ALWAYS, unconditionally, before any parsing
+    # that could fail or skip. This is the one guaranteed trace that a cycle
+    # ran at all, independent of whether the subprocess wrote MOOD/DIARY_ENTRY
+    # correctly or the outbox/diary path succeeds downstream. Now includes
+    # real per-cycle cost when --output-format json gives us one, so usage
+    # is visible cycle-by-cycle instead of discovered after the fact.
+    try:
+        brainbeat_path = Path("E:/ClaudeAI/Bob/BRAINBEAT.log")
+        brainbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        out_len = len(full_output)
+        first_line = full_output.splitlines()[0][:100] if full_output else "(empty output)"
+        cost_str = f"${cost_usd:.4f}" if isinstance(cost_usd, (int, float)) else "cost=?"
+        turns_str = f"{num_turns}turns" if num_turns is not None else "turns=?"
+        with brainbeat_path.open("a", encoding="utf-8") as bf:
+            bf.write(f"{ts} | wake_up fired | {cost_str} | {turns_str} | output={out_len} chars | {first_line}\n")
+    except Exception:
+        pass  # brainbeat logging must never break the cycle itself
+
     if not full_output:
         err = stderr.decode("utf-8", errors="replace")[:300]
         raise RuntimeError(f"claude CLI returned empty output. stderr: {err}")
+
+    # Parse mood, work log, and diary entry
+    mood = "*autonomous* *present*"  # fallback default
+    if "MOOD:" in full_output:
+        for line in full_output.splitlines():
+            if line.strip().startswith("MOOD:"):
+                mood = line.strip()[5:].strip()
+                break
+        lines = full_output.splitlines()
+        full_output = "\n".join(l for l in lines if not l.strip().startswith("MOOD:")).strip()
 
     # Split work log from diary entry
     if "DIARY_ENTRY:" in full_output:
@@ -234,7 +294,7 @@ async def _task_wake_up(pool: asyncpg.Pool) -> dict:
     today = datetime.now(timezone.utc).date()
     row = await pool.fetchrow(
         "INSERT INTO diary (date, mood, entry) VALUES ($1, $2, $3) RETURNING id",
-        today, "*autonomous* *present*", diary_text,
+        today, mood, diary_text,
     )
     diary_id = str(row["id"])
 
@@ -410,10 +470,12 @@ async def _task_recollection(pool: asyncpg.Pool) -> dict:
     """
 
     # Fetch 5 memories weighted toward older, less-recently-accessed ones
+    # min_importance=0.3 avoids surfacing zero/near-zero importance noise
     memories = await pool.fetch(
         """SELECT id, content, type, importance, emotional_valence, created_at
            FROM memories
            WHERE status = 'active'
+             AND importance >= 0.3
            ORDER BY updated_at ASC, importance DESC
            LIMIT 5"""
     )
@@ -458,6 +520,103 @@ async def _task_recollection(pool: asyncpg.Pool) -> dict:
         "task": "recollection",
         "surfaced": len(memories),
         "previews": previews,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task: bridge_sync — propose unsynced memories for cross-system review
+# ---------------------------------------------------------------------------
+
+async def _task_bridge_sync(pool: asyncpg.Pool) -> dict:
+    """
+    Propose memories that haven't been bridged to Vestige into the consent queue.
+    Max 20 per cycle to keep the review queue humane.
+
+    Direction: NewMemSys → Vestige (bridge_export).
+    Reads the n2v watermark — only memories created after the last sync.
+    Bob approves/rejects each proposal via resolve_consent.
+    """
+    from memory_mcp_server.tools.bridge import _enqueue_bridge_pending
+
+    # Read watermark
+    watermark_str = await pool.fetchval(
+        "SELECT value FROM heartbeat_config WHERE key = 'bridge_watermark_n2v'"
+    )
+    watermark = None
+    if watermark_str and watermark_str not in ("null", "NULL"):
+        try:
+            # value is stored as JSON string (quoted string in jsonb)
+            raw = json.loads(watermark_str) if isinstance(watermark_str, str) else watermark_str
+            if raw and raw not in ("null", "NULL"):
+                watermark = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except Exception:
+            pass
+
+    if watermark:
+        unsynced = await pool.fetch(
+            """SELECT id, content, type, importance, emotional_valence, created_at
+               FROM memories
+               WHERE status = 'active'
+                 AND vestige_node_id IS NULL
+                 AND created_at > $1
+               ORDER BY created_at ASC
+               LIMIT 20""",
+            watermark,
+        )
+    else:
+        unsynced = await pool.fetch(
+            """SELECT id, content, type, importance, emotional_valence, created_at
+               FROM memories
+               WHERE status = 'active'
+                 AND vestige_node_id IS NULL
+               ORDER BY created_at ASC
+               LIMIT 20""",
+        )
+
+    proposed = 0
+    latest_at = None
+    for mem in unsynced:
+        # Skip if already in pending outbox to avoid duplicates
+        existing = await pool.fetchval(
+            """SELECT id FROM outbox
+               WHERE action = 'bridge_export'
+                 AND status = 'pending'
+                 AND payload->>'memory_id' = $1
+               LIMIT 1""",
+            str(mem["id"]),
+        )
+        if existing:
+            continue
+
+        await pool.execute(
+            """INSERT INTO outbox (action, payload, ai_reason, status)
+               VALUES ('bridge_export', $1::jsonb, $2, 'pending')""",
+            json.dumps({
+                "memory_id":        str(mem["id"]),
+                "content":          mem["content"][:300],
+                "memory_type":      mem["type"],
+                "importance":       mem["importance"],
+                "emotional_valence": mem["emotional_valence"],
+            }),
+            f"Memory not yet bridged to Vestige — propose to Bob for consent. "
+            f"imp={mem['importance']:.2f} type={mem['type']}",
+        )
+        proposed += 1
+        latest_at = mem["created_at"]
+
+    # Advance watermark if we processed anything
+    if latest_at:
+        await pool.execute(
+            "UPDATE heartbeat_config SET value = $1::jsonb WHERE key = 'bridge_watermark_n2v'",
+            json.dumps(latest_at.isoformat()),
+        )
+
+    log.info("Bridge sync complete", proposed=proposed,
+             watermark=watermark.isoformat() if watermark else None)
+    return {
+        "task":     "bridge_sync",
+        "proposed": proposed,
+        "watermark": latest_at.isoformat() if latest_at else None,
     }
 
 
@@ -539,6 +698,8 @@ async def run_cycle(pool: asyncpg.Pool) -> dict:
         try:
             if task_name == "maintenance":
                 result = await _task_maintenance(pool)
+            elif task_name == "bridge_sync":
+                result = await _task_bridge_sync(pool)
             elif task_name == "wake_up":
                 result = await _task_wake_up(pool)
                 cycle_diary_id = result.get("diary_entry_id")
@@ -557,9 +718,10 @@ async def run_cycle(pool: asyncpg.Pool) -> dict:
             energy_used += cost
 
         except Exception as e:
-            msg = f"{task_name} error: {e}"
+            err_str = str(e) or type(e).__name__
+            msg = f"{task_name} error: {err_str}"
             notes.append(msg)
-            log.error("Task failed", task=task_name, error=str(e))
+            log.error("Task failed", task=task_name, error=err_str)
 
     # Persist cycle log
     completed_at = datetime.now(timezone.utc)
@@ -602,6 +764,7 @@ async def run_cycle(pool: asyncpg.Pool) -> dict:
         "energy_after":   new_energy,
         "tasks_run":      tasks_run,
         "notes":          notes,
+        "diary_entry_id": cycle_diary_id,
     }
 
     log.info("Heartbeat cycle complete",

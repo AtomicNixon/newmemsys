@@ -35,6 +35,7 @@ from memory_mcp_server.tools import (
     health as health_tools,
     heartbeat as hb_tools,
     clustering as cl_tools,
+    bridge as bridge_tools,
 )
 
 log = structlog.get_logger(__name__)
@@ -78,6 +79,7 @@ TOOLS = [
                 "max_importance": {"type": "number", "default": 1.0, "description": "Upper bound on importance (0.0–1.0). Use with min_importance=0 to surface only low-importance memories."},
                 "memory_type":    {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"]},
                 "fields":         {"type": "array", "items": {"type": "string"}, "description": "Columns to return. Omit for all. Use [\"id\",\"content\",\"importance\",\"emotional_valence\"] for slim payload during bulk sweeps."},
+                "content_truncate": {"type": "integer", "default": 0, "description": "If > 0, truncate content field to this many characters. E.g. 200. Useful for overview sweeps."},
             },
             "required": ["query"],
         },
@@ -95,8 +97,8 @@ TOOLS = [
         description=(
             "Full cognitive context reconstruction: identity + worldview + diary + top memories. "
             "slim=True returns a token-economy version (keys only, no full text) — "
-            "use for short sessions where orientation is enough. "
-            "Saves 60–80% tokens vs full hydrate."
+            "use for short sessions where orientation is enough. Saves 60–80% tokens. "
+            "brief=True returns minimum orientation (~150 tokens): name/axioms, top 3 beliefs, last diary mood."
         ),
         inputSchema={
             "type": "object",
@@ -104,6 +106,7 @@ TOOLS = [
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "default": 10},
                 "slim":  {"type": "boolean", "default": False, "description": "Return slim payload: identity keys only, worldview topics+confidence only, diary date+mood only, memory id+importance only."},
+                "brief": {"type": "boolean", "default": False, "description": "Minimum orientation (~150 tokens): name, axioms, top 3 worldview topics, last diary mood. Lighter than slim."},
             },
             "required": ["query"],
         },
@@ -126,6 +129,30 @@ TOOLS = [
                 "items": {"type": "array", "items": {"type": "object"}}
             },
             "required": ["items"],
+        },
+    ),
+    types.Tool(
+        name="remember_everywhere",
+        description=(
+            "Write a memory to BOTH NewMemSys AND Vestige in one call — the corpus callosum. "
+            "NewMemSys write always commits first. If Vestige fails, the NewMemSys memory is "
+            "preserved and a bridge_pending outbox row is queued for retry. "
+            "Returns: id, created_at, embedded, vestige_node_id, bridge_status."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content":           {"type": "string", "description": "The memory content."},
+                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"], "default": "episodic"},
+                "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5},
+                "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0},
+                "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.8},
+                "priority":          {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+                "half_life_hours":   {"type": "integer", "default": 720},
+                "tags":              {"type": "array", "items": {"type": "string"}, "default": []},
+                "context":           {"type": "object", "default": {}},
+            },
+            "required": ["content"],
         },
     ),
     types.Tool(
@@ -621,7 +648,9 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
         log.error("Tool error", tool=name, error=str(e))
         result = {"error": str(e)}
 
-    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+    text = json.dumps(result, indent=2, default=str)
+    log.debug("tool_response_size", tool=name, bytes=len(text))
+    return [types.TextContent(type="text", text=text)]
 
 
 async def _dispatch(name: str, args: dict) -> Any:
@@ -632,6 +661,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "hydrate":            return await mem_tools.hydrate(**args)
         case "hydrate_light":      return await mem_tools.hydrate_light()
         case "remember_batch":     return await mem_tools.remember_batch(**args)
+        case "remember_everywhere": return await bridge_tools.remember_everywhere(**args)
         case "edit":               return await mem_tools.edit(**args)
         case "edit_batch":         return await mem_tools.edit_batch(**args)
         case "delete":             return await mem_tools.delete(**args)
@@ -675,18 +705,36 @@ async def _dispatch(name: str, args: dict) -> Any:
 
 async def main() -> None:
     log.info("Memory MCP server starting")
+    pool_ready = False
 
-    # Init DB pool
     try:
-        await db.get_pool()
-        log.info("Database pool ready")
-    except Exception as e:
-        log.warning("Database not yet available", error=str(e))
+        # Init DB pool
+        try:
+            await db.get_pool()
+            pool_ready = True
+            log.info("Database pool ready")
+        except Exception as e:
+            log.warning("Database not yet available", error=str(e))
 
-    # Check Ollama
-    if not check_ollama():
-        log.warning("Ollama not reachable — embeddings will be skipped until it is")
+        # Check Ollama
+        if not check_ollama():
+            log.warning("Ollama not reachable — embeddings will be skipped until it is")
 
-    async with mcp.server.stdio.stdio_server() as (reader, writer):
-        log.info("stdio transport ready")
-        await app.run(reader, writer, app.create_initialization_options())
+        async with mcp.server.stdio.stdio_server() as (reader, writer):
+            log.info("stdio transport ready")
+            try:
+                await app.run(reader, writer, app.create_initialization_options())
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                log.info("stdio transport ended — shutting down")
+    finally:
+        # Close DB pool cleanly so the OS process can actually exit
+        # instead of being orphaned with live asyncpg worker tasks.
+        if pool_ready:
+            log.info("Closing database pool")
+            try:
+                await asyncio.wait_for(db.close_pool(), timeout=5.0)
+            except asyncio.TimeoutError:
+                log.warning("Pool close timed out after 5s — forcing exit")
+            except Exception as e:
+                log.warning("Pool close error", error=str(e))
+        log.info("Memory MCP server shut down")

@@ -7,6 +7,9 @@ from memory_mcp_server import database as db
 from memory_mcp_server.tools.memory import _row_to_dict
 
 
+BRIDGE_ACTIONS = {"bridge_import", "bridge_export", "bridge_pending"}
+
+
 async def consent_check(
     action: str,
     payload: dict,
@@ -44,11 +47,39 @@ async def list_pending_consent() -> list[dict]:
 
 
 async def resolve_consent(outbox_id: str, decision: str) -> dict:
-    """Human approves or rejects a pending consent item. decision: 'approved'|'rejected'"""
+    """Human approves or rejects a pending consent item. decision: 'approved'|'rejected'
+
+    For bridge_import / bridge_export / bridge_pending actions, 'approved'
+    immediately executes the cross-system copy via the bridge handler.
+    """
     if decision not in ("approved", "rejected"):
         return {"error": "decision must be 'approved' or 'rejected'"}
+
+    # Fetch the outbox row to check action type
+    row = await db.fetchrow(
+        "SELECT action, payload FROM outbox WHERE id = $1::uuid",
+        outbox_id,
+    )
+    if not row:
+        return {"error": f"outbox item not found: {outbox_id}"}
+
+    action  = row["action"]
+    payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"] or "{}")
+
+    # Mark resolved first (idempotent even if bridge call fails)
     await db.execute(
         "UPDATE outbox SET status = $1, updated_at = NOW() WHERE id = $2::uuid",
         decision, outbox_id,
     )
-    return {"outbox_id": outbox_id, "decision": decision}
+    result = {"outbox_id": outbox_id, "action": action, "decision": decision}
+
+    # Execute bridge actions when approved
+    if decision == "approved" and action in BRIDGE_ACTIONS:
+        try:
+            from memory_mcp_server.tools.bridge import handle_bridge_consent
+            bridge_result = await handle_bridge_consent(outbox_id, action, payload)
+            result["bridge"] = bridge_result
+        except Exception as e:
+            result["bridge"] = {"error": str(e), "note": "outbox marked approved; bridge execution failed"}
+
+    return result
