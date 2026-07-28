@@ -332,30 +332,58 @@ async def _task_maintenance(pool: asyncpg.Pool) -> dict:
 # ---------------------------------------------------------------------------
 
 async def _task_decay(pool: asyncpg.Pool) -> dict:
-    """Decay pass with cluster-aware consent routing.
+    """Decay is now computed at read time (VIEW, not a write).
 
-    Standard decay applies to all old memories.
-    Clusters with avg_importance < 0.40 are flagged to the consent queue
-    for Bob's review — no automatic cluster decisions.
-    Outliers (unclustered) get standard decay without consent.
+    This task does two things:
+    1. Invariant check: scan for memories with importance_original < 0.001
+       that aren't explicitly zeroed — these are bug-damaged and should be
+       flagged to the consent outbox for Bob's review. Fail loud, not silent.
+    2. Cluster consent check: clusters with avg_importance < 0.40 are flagged
+       to the consent queue for Bob's review — no automatic cluster decisions.
+
+    The old decay write loop is gone — decay_importance() was dropped in
+    migration 08_computed_decay.sql. Importance is computed live by the
+    memories VIEW: importance_original * 0.5^(hours_since_last_touch / half_life).
     """
-    # ── Standard decay on all old memories ────────────────────────────────────
-    old_memories = await pool.fetch(
-        """SELECT id FROM memories
+    # ── Invariant check: flag bug-damaged memories ───────────────────────────
+    # importance_original should never be near-zero unless explicitly set.
+    # If we find any, the decay bug or a similar issue has damaged them.
+    damaged = await pool.fetch(
+        """SELECT id, importance_original, type, content
+           FROM memories_base
            WHERE status = 'active'
-             AND updated_at < NOW() - INTERVAL '24 hours'
-           LIMIT 200"""
+             AND importance_original < 0.001
+             AND importance_original > 0
+           LIMIT 20"""
     )
-    if not old_memories:
-        return {"task": "decay", "decayed": 0, "clusters_flagged": 0}
+    damaged_flagged = 0
+    for mem in damaged:
+        # Check if already flagged
+        existing = await pool.fetchval(
+            """SELECT 1 FROM outbox
+               WHERE action = 'importance_damaged'
+                 AND payload->>'memory_id' = $1
+                 AND status = 'pending'
+               LIMIT 1""",
+            str(mem["id"]),
+        )
+        if existing:
+            continue
+        await pool.execute(
+            """INSERT INTO outbox (action, payload, ai_reason, status)
+               VALUES ('importance_damaged', $1::jsonb, $2, 'pending')""",
+            json.dumps({
+                "memory_id": str(mem["id"]),
+                "importance_original": float(mem["importance_original"]),
+                "content_preview": mem["content"][:200],
+            }),
+            f"Memory has importance_original={float(mem['importance_original']):.6f} "
+            f"— appears bug-damaged. Bob should reset or zero it explicitly.",
+        )
+        damaged_flagged += 1
 
-    decayed = 0
-    importances = []
-    for row in old_memories:
-        result = await pool.fetchval("SELECT decay_importance($1::uuid)", row["id"])
-        if result is not None:
-            decayed += 1
-            importances.append(float(result))
+    if damaged_flagged:
+        log.warning("importance_damaged memories flagged", count=damaged_flagged)
 
     # ── Cluster consent check (Bob's threshold: 0.40) ─────────────────────────
     clusters_flagged = 0
@@ -409,12 +437,12 @@ async def _task_decay(pool: asyncpg.Pool) -> dict:
 
     result = {
         "task": "decay",
-        "decayed": decayed,
-        "min_importance": round(min(importances), 4) if importances else None,
-        "max_importance": round(max(importances), 4) if importances else None,
+        "decayed": 0,  # no longer written — computed at read time
+        "damaged_flagged": damaged_flagged,
         "clusters_flagged": clusters_flagged,
     }
-    log.info("Decay complete", **{k: v for k, v in result.items() if k != "task"})
+    log.info("Decay task complete (computed, not written)",
+             **{k: v for k, v in result.items() if k != "task"})
     return result
 
 

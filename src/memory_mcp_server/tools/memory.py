@@ -65,6 +65,7 @@ async def recall(
     max_importance: float = 1.0,
     memory_type: Optional[str] = None,
     fields: Optional[list[str]] = None,
+    content_truncate: int = 0,
 ) -> list[dict]:
     """Semantic recall: vector similarity + fallback to full-text search.
 
@@ -73,6 +74,10 @@ async def recall(
                    trust_level, tags, created_at.
             Tip: fields=["id","content","importance","emotional_valence"]
                  halves payload size — useful for bulk valence sweeps.
+
+    content_truncate: if > 0, truncate the 'content' field to this many characters.
+                      Useful for overview sweeps where full text is not needed.
+                      Example: content_truncate=200 keeps first 200 chars.
     """
     embedding = embed(query)
 
@@ -112,7 +117,19 @@ async def recall(
             query, limit, min_importance, max_importance,
         )
 
-    return [_row_to_dict(r) for r in rows]
+    # Touch last_recalled_at for each returned memory — this is the
+    # reinforcement signal that resets the decay clock. Only recall()
+    # and recall_recent() bump this; edits and decay don't.
+    for row in rows:
+        if "id" in row.keys():
+            await db.execute("SELECT touch_last_recalled($1::uuid)", row["id"])
+
+    result = [_row_to_dict(r) for r in rows]
+    if content_truncate > 0:
+        for m in result:
+            if m.get("content") and len(m["content"]) > content_truncate:
+                m["content"] = m["content"][:content_truncate] + "… [truncated]"
+    return result
 
 
 async def recall_recent(limit: int = 10) -> list[dict]:
@@ -124,10 +141,13 @@ async def recall_recent(limit: int = 10) -> list[dict]:
            ORDER BY created_at DESC LIMIT $1""",
         limit,
     )
+    # Touch last_recalled_at — reinforcement signal
+    for row in rows:
+        await db.execute("SELECT touch_last_recalled($1::uuid)", row["id"])
     return [_row_to_dict(r) for r in rows]
 
 
-async def hydrate(query: str, limit: int = 10, slim: bool = False) -> dict:
+async def hydrate(query: str, limit: int = 10, slim: bool = False, brief: bool = False) -> dict:
     """Full context reconstruction: identity + worldview + diary + memories.
 
     slim=True returns a token-economy version:
@@ -136,8 +156,15 @@ async def hydrate(query: str, limit: int = 10, slim: bool = False) -> dict:
       • diary: date + mood only (no entry text)
       • memories: id + importance + type only (no content)
 
+    brief=True returns the minimum orientation payload (~150 tokens):
+      • name + axioms from identity
+      • top 3 worldview beliefs (topic + confidence only)
+      • last diary mood + date
+      Use when you need to know who you are but nothing more.
+
     Use slim=True for short sessions where you need orientation
     but not full reconstruction. Saves 60–80% tokens vs full hydrate.
+    brief=True is even lighter — use for quick orientation only.
     """
     embedding = embed(query)
     embed_literal = json.dumps(embedding) if embedding else None
@@ -147,6 +174,27 @@ async def hydrate(query: str, limit: int = 10, slim: bool = False) -> dict:
         embed_literal, limit,
     )
     ctx = json.loads(result) if result else {}
+
+    # Brief mode: minimum orientation — name/axioms, top 3 beliefs, last diary mood
+    if brief:
+        identity = ctx.get("identity", {})
+        brief_ctx: dict = {}
+        brief_identity = {}
+        for key in ("name", "axiom_1", "axiom_2", "axiom_3", "pronouns"):
+            if key in identity:
+                brief_ctx[key] = identity[key]
+        if brief_identity:
+            brief_ctx["identity"] = brief_identity
+        if "worldview" in ctx:
+            brief_ctx["worldview"] = [
+                {"topic": w.get("topic"), "confidence": w.get("confidence")}
+                for w in ctx["worldview"][:3]
+            ]
+        if "diary" in ctx and ctx["diary"]:
+            d = ctx["diary"][0]
+            brief_ctx["last_diary"] = {"date": d.get("date"), "mood": d.get("mood")}
+        brief_ctx["note"] = "Brief hydration (~150 tokens). Use hydrate(slim=True) or hydrate() for more."
+        return brief_ctx
 
     if not slim:
         return ctx
