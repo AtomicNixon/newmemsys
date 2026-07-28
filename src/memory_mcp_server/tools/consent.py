@@ -8,6 +8,7 @@ from memory_mcp_server.tools.memory import _row_to_dict
 
 
 BRIDGE_ACTIONS = {"bridge_import", "bridge_export", "bridge_pending"}
+GRAPH_ACTIONS = {"graph_edge_candidate"}
 
 
 async def consent_check(
@@ -51,6 +52,8 @@ async def resolve_consent(outbox_id: str, decision: str) -> dict:
 
     For bridge_import / bridge_export / bridge_pending actions, 'approved'
     immediately executes the cross-system copy via the bridge handler.
+    For graph_edge_candidate actions, 'approved' inserts the edge into
+    memory_graph.
     """
     if decision not in ("approved", "rejected"):
         return {"error": "decision must be 'approved' or 'rejected'"}
@@ -66,7 +69,7 @@ async def resolve_consent(outbox_id: str, decision: str) -> dict:
     action  = row["action"]
     payload = row["payload"] if isinstance(row["payload"], dict) else json.loads(row["payload"] or "{}")
 
-    # Mark resolved first (idempotent even if bridge call fails)
+    # Mark resolved first (idempotent even if execution fails)
     await db.execute(
         "UPDATE outbox SET status = $1, updated_at = NOW() WHERE id = $2::uuid",
         decision, outbox_id,
@@ -81,5 +84,33 @@ async def resolve_consent(outbox_id: str, decision: str) -> dict:
             result["bridge"] = bridge_result
         except Exception as e:
             result["bridge"] = {"error": str(e), "note": "outbox marked approved; bridge execution failed"}
+
+    # Execute graph edge actions when approved
+    if decision == "approved" and action in GRAPH_ACTIONS:
+        try:
+            memory_id    = payload.get("memory_id")
+            candidate_id = payload.get("candidate_id")
+            similarity   = payload.get("similarity", 0.8)
+            rel_type     = payload.get("proposed_relationship", "related_to")
+
+            if not memory_id or not candidate_id:
+                result["graph"] = {"error": "missing memory_id or candidate_id in payload"}
+            else:
+                await db.execute(
+                    """INSERT INTO memory_graph
+                       (memory_id, connected_memory_id, relationship_type, confidence, context)
+                       VALUES ($1::uuid, $2::uuid, $3::relationship_type, $4, $5)""",
+                    memory_id, candidate_id, rel_type, float(similarity),
+                    "proposed by dream consolidation",
+                )
+                result["graph"] = {
+                    "success": True,
+                    "memory_id": memory_id,
+                    "connected_memory_id": candidate_id,
+                    "relationship_type": rel_type,
+                    "confidence": similarity,
+                }
+        except Exception as e:
+            result["graph"] = {"error": str(e), "note": "outbox marked approved; edge creation failed"}
 
     return result

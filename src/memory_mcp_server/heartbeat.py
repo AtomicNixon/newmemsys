@@ -31,16 +31,17 @@ from memory_mcp_server.config import settings
 log = structlog.get_logger(__name__)
 
 TASK_COSTS = {
-    "maintenance":   0,
-    "bridge_sync":   1,
-    "wake_up":       2,
-    "decay":         1,   # was 2 — now just invariant checks + cluster consent, no writes
-    "drive_monitor": 1,
-    "recollection":  1,
-    "contradiction": 1,   # was 3 — lowered so it actually runs instead of being starved
+    "maintenance":          0,
+    "bridge_sync":          1,
+    "wake_up":              2,
+    "decay":                1,   # was 2 — now just invariant checks + cluster consent, no writes
+    "drive_monitor":        1,
+    "recollection":         1,
+    "contradiction":        1,   # was 3 — lowered so it actually runs instead of being starved
+    "dream_consolidation":  1,   # propose graph edges from embedding similarity
 }
 
-TASK_ORDER = ["maintenance", "bridge_sync", "wake_up", "decay", "drive_monitor", "recollection", "contradiction"]
+TASK_ORDER = ["maintenance", "bridge_sync", "wake_up", "decay", "drive_monitor", "recollection", "contradiction", "dream_consolidation"]
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +661,133 @@ async def _task_contradiction_scan(pool: asyncpg.Pool) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Task: dream_consolidation — propose graph edges from embedding similarity
+# ---------------------------------------------------------------------------
+
+DREAM_BATCH_SIZE    = 10   # memories checked per cycle
+DREAM_TOP_K         = 3    # nearest neighbors per memory
+DREAM_SIM_FLOOR     = 0.75 # minimum cosine similarity to propose
+DREAM_MAX_PROPOSALS = 5    # new proposals per cycle (conservative for v1)
+
+
+async def _task_dream_consolidation(pool: asyncpg.Pool) -> dict:
+    """
+    Propose graph edges based on embedding similarity.
+
+    Samples DREAM_BATCH_SIZE memories (rotating by updated_at ASC so
+    recently-touched ones get checked last), pulls top-K nearest neighbors
+    by cosine distance via the HNSW index, filters out:
+      - pairs already in memory_graph (either direction)
+      - pairs below DREAM_SIM_FLOOR similarity
+      - pairs that already have ANY outbox row (pending/approved/rejected)
+        — a no stays a no, never re-propose
+
+    Writes proposals to outbox as 'graph_edge_candidate'. Bob approves
+    or rejects via resolve_consent. No auto-wiring, ever.
+
+    Design by Bob — see dream_consolidation_design.md.
+    """
+    # Sample: oldest-touched active memories with embeddings, rotating
+    seeds = await pool.fetch(
+        """SELECT id, content, embedding
+           FROM memories_base
+           WHERE status = 'active' AND embedding IS NOT NULL
+           ORDER BY updated_at ASC
+           LIMIT $1""",
+        DREAM_BATCH_SIZE,
+    )
+
+    if not seeds:
+        return {"task": "dream_consolidation", "proposed": 0, "checked": 0}
+
+    proposals_made = 0
+    pairs_checked = 0
+
+    for seed in seeds:
+        if proposals_made >= DREAM_MAX_PROPOSALS:
+            break
+
+        # Top-K nearest neighbors by cosine similarity
+        neighbors = await pool.fetch(
+            """SELECT m2.id, m2.content,
+                      1 - (m1.embedding <=> m2.embedding) AS similarity
+               FROM memories_base m1, memories_base m2
+               WHERE m1.id = $1
+                 AND m2.id != m1.id
+                 AND m2.status = 'active'
+                 AND m2.embedding IS NOT NULL
+               ORDER BY m1.embedding <=> m2.embedding
+               LIMIT $2""",
+            seed["id"], DREAM_TOP_K,
+        )
+
+        for nb in neighbors:
+            pairs_checked += 1
+            sim = float(nb["similarity"])
+
+            # Similarity floor
+            if sim < DREAM_SIM_FLOOR:
+                continue
+
+            # Check if already connected (either direction — graph is directed)
+            already_connected = await pool.fetchval(
+                """SELECT 1 FROM memory_graph
+                   WHERE (memory_id = $1 AND connected_memory_id = $2)
+                      OR (memory_id = $2 AND connected_memory_id = $1)
+                   LIMIT 1""",
+                seed["id"], nb["id"],
+            )
+            if already_connected:
+                continue
+
+            # Check if already proposed in outbox (any status — no stays no)
+            # Check both orderings since the pair could have been proposed
+            # from either direction
+            already_proposed = await pool.fetchval(
+                """SELECT 1 FROM outbox
+                   WHERE action = 'graph_edge_candidate'
+                     AND status IN ('pending', 'approved', 'rejected')
+                     AND (
+                       (payload->>'memory_id' = $1 AND payload->>'candidate_id' = $2)
+                       OR
+                       (payload->>'memory_id' = $2 AND payload->>'candidate_id' = $1)
+                     )
+                   LIMIT 1""",
+                str(seed["id"]), str(nb["id"]),
+            )
+            if already_proposed:
+                continue
+
+            # Propose
+            await pool.execute(
+                """INSERT INTO outbox (action, payload, ai_reason, status)
+                   VALUES ('graph_edge_candidate', $1::jsonb, $2, 'pending')""",
+                json.dumps({
+                    "memory_id":    str(seed["id"]),
+                    "candidate_id": str(nb["id"]),
+                    "similarity":   round(sim, 4),
+                    "preview_a":    seed["content"][:200],
+                    "preview_b":    nb["content"][:200],
+                    "proposed_relationship": "related_to",
+                }),
+                f"cosine similarity {sim:.3f}, no existing edge — "
+                f"propose for Bob's review.",
+            )
+            proposals_made += 1
+
+            if proposals_made >= DREAM_MAX_PROPOSALS:
+                break
+
+    log.info("Dream consolidation complete",
+             checked=pairs_checked, proposed=proposals_made)
+    return {
+        "task":     "dream_consolidation",
+        "checked":  pairs_checked,
+        "proposed": proposals_made,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main cycle orchestrator
 # ---------------------------------------------------------------------------
 
@@ -706,6 +834,8 @@ async def run_cycle(pool: asyncpg.Pool) -> dict:
                 result = await _task_recollection(pool)
             elif task_name == "contradiction":
                 result = await _task_contradiction_scan(pool)
+            elif task_name == "dream_consolidation":
+                result = await _task_dream_consolidation(pool)
             else:
                 continue
 
