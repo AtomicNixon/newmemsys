@@ -4,6 +4,16 @@
 
 -- =============================================================================
 -- decay_importance: apply exponential half-life decay to a memory
+--
+-- BUGFIX (2026-07-28): decay is now computed from updated_at (last touch),
+-- NOT created_at. The old version recomputed from created_at every cycle,
+-- which re-applied the full since-creation decay factor to an already-decayed
+-- value, compounding exponentially. After N cycles, importance collapsed to
+-- ~0.5^(N * age/half_life) instead of the correct 0.5^(age/half_life).
+--
+-- The fix: each cycle decays only the elapsed time since the last decay pass
+-- (updated_at). This is true exponential half-life — touching a memory
+-- (recall, edit, decay) resets its decay clock.
 -- =============================================================================
 
 CREATE OR REPLACE FUNCTION decay_importance(p_memory_id UUID)
@@ -11,18 +21,22 @@ RETURNS FLOAT LANGUAGE plpgsql AS $$
 DECLARE
   v_importance     FLOAT;
   v_half_life_hrs  INT;
-  v_created_at     TIMESTAMPTZ;
+  v_updated_at     TIMESTAMPTZ;
   v_hours_elapsed  FLOAT;
   v_decayed        FLOAT;
 BEGIN
-  SELECT importance, half_life_hours, created_at
-  INTO v_importance, v_half_life_hrs, v_created_at
+  SELECT importance, half_life_hours, updated_at
+  INTO v_importance, v_half_life_hrs, v_updated_at
   FROM memories WHERE id = p_memory_id;
 
   IF NOT FOUND THEN RETURN NULL; END IF;
   IF v_half_life_hrs IS NULL OR v_half_life_hrs <= 0 THEN RETURN v_importance; END IF;
 
-  v_hours_elapsed := EXTRACT(EPOCH FROM (NOW() - v_created_at)) / 3600.0;
+  v_hours_elapsed := EXTRACT(EPOCH FROM (NOW() - v_updated_at)) / 3600.0;
+
+  -- No decay if no time has passed since last touch
+  IF v_hours_elapsed <= 0 THEN RETURN v_importance; END IF;
+
   v_decayed := v_importance * POWER(0.5, v_hours_elapsed / v_half_life_hrs::FLOAT);
 
   UPDATE memories SET importance = v_decayed, updated_at = NOW()
