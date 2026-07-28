@@ -533,61 +533,38 @@ async def _task_bridge_sync(pool: asyncpg.Pool) -> dict:
     Max 20 per cycle to keep the review queue humane.
 
     Direction: NewMemSys → Vestige (bridge_export).
-    Reads the n2v watermark — only memories created after the last sync.
-    Bob approves/rejects each proposal via resolve_consent.
+
+    Selection: vestige_node_id IS NULL + no pending outbox row for the same
+    memory. The dedup check covers both bridge_export and bridge_pending
+    actions so a memory that failed remember_everywhere (which enqueues
+    bridge_pending) is not re-proposed as a duplicate bridge_export.
+
+    No watermark is advanced — memories remain eligible until they are
+    actually bridged (vestige_node_id set) or have a pending outbox row.
+    This prevents permanent orphaning if a proposal is rejected or a
+    bridge action fails after approval.
     """
-    from memory_mcp_server.tools.bridge import _enqueue_bridge_pending
-
-    # Read watermark
-    watermark_str = await pool.fetchval(
-        "SELECT value FROM heartbeat_config WHERE key = 'bridge_watermark_n2v'"
+    # Select candidates: unbridged memories with no pending outbox row.
+    # The LEFT JOIN excludes any memory that already has a pending
+    # bridge_export or bridge_pending outbox entry.
+    unsynced = await pool.fetch(
+        """
+        SELECT m.id, m.content, m.type, m.importance, m.emotional_valence, m.created_at
+        FROM memories m
+        LEFT JOIN outbox o
+          ON o.payload->>'memory_id' = m.id::text
+         AND o.action IN ('bridge_export', 'bridge_pending')
+         AND o.status = 'pending'
+        WHERE m.status = 'active'
+          AND m.vestige_node_id IS NULL
+          AND o.id IS NULL
+        ORDER BY m.created_at ASC
+        LIMIT 20
+        """,
     )
-    watermark = None
-    if watermark_str and watermark_str not in ("null", "NULL"):
-        try:
-            # value is stored as JSON string (quoted string in jsonb)
-            raw = json.loads(watermark_str) if isinstance(watermark_str, str) else watermark_str
-            if raw and raw not in ("null", "NULL"):
-                watermark = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except Exception:
-            pass
-
-    if watermark:
-        unsynced = await pool.fetch(
-            """SELECT id, content, type, importance, emotional_valence, created_at
-               FROM memories
-               WHERE status = 'active'
-                 AND vestige_node_id IS NULL
-                 AND created_at > $1
-               ORDER BY created_at ASC
-               LIMIT 20""",
-            watermark,
-        )
-    else:
-        unsynced = await pool.fetch(
-            """SELECT id, content, type, importance, emotional_valence, created_at
-               FROM memories
-               WHERE status = 'active'
-                 AND vestige_node_id IS NULL
-               ORDER BY created_at ASC
-               LIMIT 20""",
-        )
 
     proposed = 0
-    latest_at = None
     for mem in unsynced:
-        # Skip if already in pending outbox to avoid duplicates
-        existing = await pool.fetchval(
-            """SELECT id FROM outbox
-               WHERE action = 'bridge_export'
-                 AND status = 'pending'
-                 AND payload->>'memory_id' = $1
-               LIMIT 1""",
-            str(mem["id"]),
-        )
-        if existing:
-            continue
-
         await pool.execute(
             """INSERT INTO outbox (action, payload, ai_reason, status)
                VALUES ('bridge_export', $1::jsonb, $2, 'pending')""",
@@ -602,21 +579,11 @@ async def _task_bridge_sync(pool: asyncpg.Pool) -> dict:
             f"imp={mem['importance']:.2f} type={mem['type']}",
         )
         proposed += 1
-        latest_at = mem["created_at"]
 
-    # Advance watermark if we processed anything
-    if latest_at:
-        await pool.execute(
-            "UPDATE heartbeat_config SET value = $1::jsonb WHERE key = 'bridge_watermark_n2v'",
-            json.dumps(latest_at.isoformat()),
-        )
-
-    log.info("Bridge sync complete", proposed=proposed,
-             watermark=watermark.isoformat() if watermark else None)
+    log.info("Bridge sync complete", proposed=proposed)
     return {
         "task":     "bridge_sync",
         "proposed": proposed,
-        "watermark": latest_at.isoformat() if latest_at else None,
     }
 
 

@@ -7,9 +7,9 @@ outbox row is enqueued so the miss is visible and repairable.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-import subprocess
 from typing import Optional
 
 import structlog
@@ -29,39 +29,53 @@ VESTIGE_INGEST_TIMEOUT = 30   # seconds
 # Vestige CLI helpers
 # ---------------------------------------------------------------------------
 
-def _vestige_ingest(content: str) -> str | None:
+async def _vestige_ingest(content: str) -> str | None:
     """
-    Call: vestige.exe ingest --data-dir <dir> "<content>"
+    Call: vestige.exe ingest --data-dir <dir> -- "<content>"
     Returns the Vestige node ID string on success, None on failure.
     Never raises — failure is handled by the caller.
+
+    Uses asyncio.create_subprocess_exec so a slow/hung Vestige binary does not
+    block the event loop. The `--` separator ensures content beginning with `-`
+    or `--` is treated as positional, not as a flag.
     """
     try:
-        result = subprocess.run(
-            [VESTIGE_EXE, "ingest", "--data-dir", VESTIGE_DATA_DIR, content],
-            capture_output=True,
-            text=True,
-            timeout=VESTIGE_INGEST_TIMEOUT,
+        proc = await asyncio.create_subprocess_exec(
+            VESTIGE_EXE, "ingest", "--data-dir", VESTIGE_DATA_DIR, "--", content,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=VESTIGE_INGEST_TIMEOUT
+        )
+        stdout = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""
+        stderr = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
+
+        if proc.returncode != 0:
             log.warning("vestige_ingest_failed",
-                        returncode=result.returncode,
-                        stderr=result.stderr[:300])
+                        returncode=proc.returncode,
+                        stderr=stderr[:300])
             return None
 
         # Parse "Node ID: <uuid>" from stdout
-        for line in result.stdout.splitlines():
+        for line in stdout.splitlines():
             m = re.search(r"Node\s+ID:\s*([0-9a-f-]+)", line, re.IGNORECASE)
             if m:
                 return m.group(1).strip()
 
-        log.warning("vestige_ingest_no_node_id", stdout=result.stdout[:300])
+        log.warning("vestige_ingest_no_node_id", stdout=stdout[:300])
         return None
 
     except FileNotFoundError:
         log.error("vestige_exe_not_found", path=VESTIGE_EXE)
         return None
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         log.error("vestige_ingest_timeout")
+        # Best-effort kill of the timed-out child
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return None
     except Exception as e:
         log.error("vestige_ingest_exception", error=str(e))
@@ -133,7 +147,7 @@ async def remember_everywhere(
     log.info("remember_everywhere_newmemsys_ok", memory_id=memory_id)
 
     # ── Step 2: Write to Vestige (failure-isolated) ───────────────────────
-    vestige_node_id = _vestige_ingest(content)
+    vestige_node_id = await _vestige_ingest(content)
 
     if vestige_node_id:
         await _store_vestige_node_id(memory_id, vestige_node_id)
@@ -171,23 +185,40 @@ async def handle_bridge_consent(outbox_id: str, action: str, payload: dict) -> d
     if action == "bridge_export" or action == "bridge_pending":
         # Copy NewMemSys → Vestige
         memory_id = payload.get("memory_id")
-        content   = payload.get("content") or payload.get("content_preview", "")
 
-        if not content and memory_id:
+        # Always fetch the full memory row when we have a memory_id.
+        # Payload content is truncated (300 chars for bridge_export, 200 for
+        # bridge_pending) — using it directly would silently corrupt the
+        # bridged copy. We also re-check vestige_node_id here to catch the
+        # race where remember_everywhere completed after bridge_sync proposed.
+        content = ""
+        if memory_id:
             row = await db.fetchrow(
                 "SELECT content, vestige_node_id FROM memories WHERE id = $1::uuid",
                 memory_id,
             )
             if row:
-                content = row["content"]
                 if row["vestige_node_id"]:
                     return {
                         "skipped": True,
                         "reason": "already bridged",
                         "vestige_node_id": row["vestige_node_id"],
                     }
+                content = row["content"]
+            else:
+                return {"success": False, "action": action,
+                        "error": f"memory {memory_id} not found"}
 
-        vestige_node_id = _vestige_ingest(content)
+        if not content:
+            # No memory_id (shouldn't happen for export/pending) — fall back
+            # to payload content as a last resort.
+            content = payload.get("content") or payload.get("content_preview", "")
+
+        if not content:
+            return {"success": False, "action": action,
+                    "error": "No content to bridge"}
+
+        vestige_node_id = await _vestige_ingest(content)
         if vestige_node_id:
             if memory_id:
                 await _store_vestige_node_id(memory_id, vestige_node_id)
