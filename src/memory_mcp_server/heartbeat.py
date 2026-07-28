@@ -34,10 +34,10 @@ TASK_COSTS = {
     "maintenance":   0,
     "bridge_sync":   1,
     "wake_up":       2,
-    "decay":         2,
+    "decay":         1,   # was 2 — now just invariant checks + cluster consent, no writes
     "drive_monitor": 1,
     "recollection":  1,
-    "contradiction": 3,
+    "contradiction": 1,   # was 3 — lowered so it actually runs instead of being starved
 }
 
 TASK_ORDER = ["maintenance", "bridge_sync", "wake_up", "decay", "drive_monitor", "recollection", "contradiction"]
