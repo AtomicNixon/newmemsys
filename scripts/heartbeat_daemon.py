@@ -247,6 +247,31 @@ async def main() -> None:
                 for note in summary["notes"]:
                     print(f"  note: {note}")
             print(f"  Next run: {scheduled_next.strftime('%Y-%m-%d %H:%M UTC')}")
+            # ── Write SYSTEM_STATUS.md for Art ─────────────────────────────
+            status_path = Path("E:/ClaudeAI/Bob/SYSTEM_STATUS.md")
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            note_lines = "\n".join(f"- {n}" for n in summary.get("notes", [])) or "- none"
+            status_path.write_text(
+                f"# SYSTEM_STATUS.md\n"
+                f"# If the timestamp below is more than 7 hours old, the daemon may be down.\n\n"
+                f"## Last Heartbeat Cycle\n"
+                f"**Timestamp:** {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"**Cycle:** #{summary['cycle_number']}\n"
+                f"**Duration:** {summary.get('duration_s', '?')}s\n"
+                f"**Energy:** {summary['energy_before']} → {summary['energy_after']} "
+                f"(used {summary['energy_used']})\n"
+                f"**Tasks run:** {', '.join(tasks) or 'none'}\n"
+                f"**Diary entry written:** {'yes' if diary else 'no'}\n"
+                f"**Notes:**\n{note_lines}\n"
+                f"**Next run:** {scheduled_next.strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+                f"## Daemon Config\n"
+                f"**Frequency:** {frequency}\n"
+                f"**Source:** NewMemSys heartbeat_daemon.py (autonomous)\n\n"
+                f"## Faculta (Expergis + Velle)\n"
+                f"Check port 7839: `curl http://127.0.0.1:7839/health`\n"
+                f"If sidecar is up, in-session self-prompting is also active.\n",
+                encoding="utf-8",
+            )
         except Exception as e:
             log.error("Cycle failed", error=str(e))
             print(f"  Cycle error: {e}")

@@ -10,11 +10,13 @@ from memory_mcp_server.tools.memory import _row_to_dict
 async def write_diary(mood: str, entry: str, date: Optional[str] = None) -> dict:
     """Write a diary entry. word count is auto-computed by DB."""
     if date:
+        from datetime import date as date_type
+        parsed_date = date_type.fromisoformat(date)
         row = await db.fetchrow(
             """INSERT INTO diary (date, mood, entry)
-               VALUES ($1::date, $2, $3)
+               VALUES ($1, $2, $3)
                RETURNING id, date, words, created_at""",
-            date, mood, entry,
+            parsed_date, mood, entry,
         )
     else:
         row = await db.fetchrow(
@@ -24,7 +26,6 @@ async def write_diary(mood: str, entry: str, date: Optional[str] = None) -> dict
             mood, entry,
         )
     return _row_to_dict(row)
-
 
 async def read_diary(limit: int = 5) -> list[dict]:
     """Return the most recent diary entries."""

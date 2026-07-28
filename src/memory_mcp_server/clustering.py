@@ -225,8 +225,11 @@ async def run_hdbscan(
                         mem["id"], cluster_uuid, dist,
                     )
 
-                # Snapshot trajectory
-                await conn.execute("SELECT record_cluster_trajectory($1)", cluster_uuid)
+                # Snapshot trajectory (best-effort — don't let this kill the transaction)
+                try:
+                    await conn.execute("SELECT record_cluster_trajectory($1)", cluster_uuid)
+                except Exception as e:
+                    log.warning("record_cluster_trajectory failed", error=str(e), label=label)
 
                 # Update AGE vertex (best-effort)
                 try:
@@ -234,15 +237,17 @@ async def run_hdbscan(
                     await conn.execute("SET search_path = ag_catalog, public")
                     for mem in mems_in_cluster:
                         await conn.execute(
-                            """SELECT * FROM cypher('cognitive_graph', $$
-                                MATCH (m:Memory {pg_id: '%s'})
-                                SET m.cluster_id = '%s'
+                            f"""SELECT * FROM cypher('cognitive_graph', $$
+                                MATCH (m:Memory {{pg_id: '{mem["id"]}'}})
+                                SET m.cluster_id = '{cluster_uuid}'
                                 RETURN m
-                            $$) AS (m agtype)""",
-                            str(mem["id"]), str(cluster_uuid),
+                            $$) AS (m agtype)"""
                         )
                 except Exception as e:
                     log.warning("AGE cluster_id update failed", error=str(e))
+                finally:
+                    # Reset search_path so subsequent clusters find public schema tables
+                    await conn.execute("SET search_path = public")
 
     return {
         "clusters_found": n_clusters,
