@@ -93,6 +93,21 @@ async def age_graph_status() -> dict:
     return stats
 
 
+async def sync_worldview() -> dict:
+    """
+    Sync all worldview beliefs from PostgreSQL into AGE WorldView vertices.
+    Idempotent: creates missing vertices, upserts existing ones in place.
+
+    Ongoing writes via set_worldview() are auto-synced by a DB trigger, so
+    this is mainly for one-off full resyncs (e.g. after a bulk import) or
+    to repair drift if a trigger run was ever missed.
+    """
+    pool = await db.get_pool()
+    result = await age.sync_worldview(pool)
+    log.info("sync_worldview", **result)
+    return result
+
+
 async def connect_belief(
     memory_id: str,
     worldview_id: str,

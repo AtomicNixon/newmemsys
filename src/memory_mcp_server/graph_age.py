@@ -273,18 +273,39 @@ async def path_between(
 
 async def sync_all(pool: asyncpg.Pool) -> dict:
     """
-    Sync all active memories and graph edges from PostgreSQL into AGE.
-    Calls the PL/pgSQL functions defined in 05_age_graph.sql.
-    Safe to call multiple times — skips already-present vertices/edges.
+    Sync all active memories, worldview beliefs, and graph edges from
+    PostgreSQL into AGE. Calls the PL/pgSQL functions defined in
+    05_age_graph.sql. Safe to call multiple times — skips already-present
+    vertices/edges (worldview upserts in place instead of skipping).
     """
     conn = await _age_conn(pool)
     try:
         mem_row = await conn.fetchrow("SELECT * FROM sync_memories_to_age()")
+        wv_row = await conn.fetchrow("SELECT * FROM sync_worldview_to_age()")
         edge_row = await conn.fetchrow("SELECT * FROM sync_edges_to_age()")
         return {
-            "memories": {"inserted": mem_row["inserted"], "skipped": mem_row["skipped"]},
-            "edges":    {"inserted": edge_row["inserted"], "skipped": edge_row["skipped"]},
+            "memories":  {"inserted": mem_row["inserted"], "skipped": mem_row["skipped"]},
+            "worldview": {"inserted": wv_row["inserted"], "updated": wv_row["updated"], "skipped": wv_row["skipped"]},
+            "edges":     {"inserted": edge_row["inserted"], "skipped": edge_row["skipped"]},
         }
+    finally:
+        await _release(pool, conn)
+
+
+async def sync_worldview(pool: asyncpg.Pool) -> dict:
+    """
+    Sync all worldview beliefs from PostgreSQL into AGE WorldView vertices.
+    Idempotent: creates missing vertices, upserts existing ones in place.
+
+    Ongoing writes (set_worldview) are also auto-synced by the
+    tg_sync_worldview_to_age trigger (db/09_worldview_age_sync.sql) — this
+    is for manual/on-demand full resync, e.g. after a bulk import or to
+    repair drift.
+    """
+    conn = await _age_conn(pool)
+    try:
+        row = await conn.fetchrow("SELECT * FROM sync_worldview_to_age()")
+        return {"inserted": row["inserted"], "updated": row["updated"], "skipped": row["skipped"]}
     finally:
         await _release(pool, conn)
 

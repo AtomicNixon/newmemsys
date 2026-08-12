@@ -367,6 +367,16 @@ TOOLS = [
         inputSchema={"type": "object", "properties": {}},
     ),
     types.Tool(
+        name="sync_worldview",
+        description=(
+            "Sync all worldview beliefs from PostgreSQL into AGE WorldView vertices. "
+            "Idempotent — creates missing vertices, upserts existing ones in place. "
+            "Ongoing set_worldview() writes are auto-synced by a DB trigger; use this "
+            "for one-off full resyncs or to repair drift."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    types.Tool(
         name="connect_belief",
         description=(
             "Create an INFORMS_BELIEF edge from a Memory vertex to a WorldView vertex "
@@ -685,6 +695,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "neighbourhood_cypher":    return await gc_tools.neighbourhood_cypher(**args)
         case "path_between_cypher":     return await gc_tools.path_between_cypher(**args)
         case "age_graph_status":        return await gc_tools.age_graph_status()
+        case "sync_worldview":          return await gc_tools.sync_worldview()
         case "connect_belief":          return await gc_tools.connect_belief(**args)
         case "run_clustering":          return await cl_tools.run_clustering(**args)
         case "get_clusters":            return await cl_tools.get_clusters()
