@@ -244,9 +244,20 @@ TOOLS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "items": {"type": "array", "items": {"type": "object"}}
+                "edges": {"type": "array", "items": {"type": "object"}}
             },
-            "required": ["items"],
+            "required": ["edges"],
+        },
+    ),
+    types.Tool(
+        name="disconnect",
+        description="Bulk-delete edges from memory_graph. Each edge may specify id (preferred) or from_id+to_id+relationship_type.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "edges": {"type": "array", "items": {"type": "object"}}
+            },
+            "required": ["edges"],
         },
     ),
     types.Tool(
@@ -683,6 +694,7 @@ async def _dispatch(name: str, args: dict) -> Any:
         case "assign_memories_to_cluster": return await cl_tools.assign_memories_to_cluster(**args)
         case "clustering_diagnostic":   return await cl_tools.clustering_diagnostic()
         case "connect_batch":      return await graph_tools.connect_batch(**args)
+        case "disconnect":         return await graph_tools.disconnect_batch(**args)
         case "get_identity":       return await id_tools.get_identity()
         case "get_worldview":      return await id_tools.get_worldview()
         case "get_drives":         return await id_tools.get_drives()
