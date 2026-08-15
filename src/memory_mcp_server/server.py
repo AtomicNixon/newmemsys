@@ -35,7 +35,6 @@ from memory_mcp_server.tools import (
     health as health_tools,
     heartbeat as hb_tools,
     clustering as cl_tools,
-    bridge as bridge_tools,
 )
 
 log = structlog.get_logger(__name__)
@@ -49,100 +48,27 @@ app = Server("memory-system")
 
 TOOLS = [
     types.Tool(
-        name="remember",
-        description="Store a new memory. Generates an embedding via Ollama.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "content":           {"type": "string", "description": "The memory content."},
-                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working","session_summary"], "default": "episodic"},
-                "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5, "description": "Float 0.0 (trivial) to 1.0 (critical). Never send integers > 1."},
-                "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0, "description": "Float -1.0 (negative) to 1.0 (positive)."},
-                "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.8, "description": "Float 0.0 (untrusted) to 1.0 (fully trusted)."},
-                "priority":          {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
-                "half_life_hours":   {"type": "integer", "default": 720},
-                "tags":              {"type": "array", "items": {"type": "string"}, "default": []},
-                "context":           {"type": "object", "default": {}},
-            },
-            "required": ["content"],
-        },
-    ),
-    types.Tool(
-        name="recall",
-        description="Semantic memory search using vector similarity + full-text fallback.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "query":          {"type": "string"},
-                "limit":          {"type": "integer", "default": 10},
-                "min_importance": {"type": "number", "default": 0.3},
-                "max_importance": {"type": "number", "default": 1.0, "description": "Upper bound on importance (0.0–1.0). Use with min_importance=0 to surface only low-importance memories."},
-                "memory_type":    {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"]},
-                "fields":         {"type": "array", "items": {"type": "string"}, "description": "Columns to return. Omit for all. Use [\"id\",\"content\",\"importance\",\"emotional_valence\"] for slim payload during bulk sweeps."},
-                "content_truncate": {"type": "integer", "default": 0, "description": "If > 0, truncate content field to this many characters. E.g. 200. Useful for overview sweeps."},
-            },
-            "required": ["query"],
-        },
-    ),
-    types.Tool(
-        name="recall_recent",
-        description="Return the most recently created active memories.",
-        inputSchema={
-            "type": "object",
-            "properties": {"limit": {"type": "integer", "default": 10}},
-        },
-    ),
-    types.Tool(
-        name="hydrate",
+        name="memory",
         description=(
-            "Full cognitive context reconstruction: identity + worldview + diary + top memories. "
-            "slim=True returns a token-economy version (keys only, no full text) — "
-            "use for short sessions where orientation is enough. Saves 60–80% tokens. "
-            "brief=True returns minimum orientation (~150 tokens): name/axioms, top 3 beliefs, last diary mood."
+            "Unified memory dispatcher. Use 'action' to select the operation: "
+            "remember, recall, recall_recent, hydrate, hydrate_light, remember_batch, "
+            "remember_everywhere, edit, edit_batch, delete. "
+            "Replaces the previous individual memory tools to reduce MCP schema size."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer", "default": 10},
-                "slim":  {"type": "boolean", "default": False, "description": "Return slim payload: identity keys only, worldview topics+confidence only, diary date+mood only, memory id+importance only."},
-                "brief": {"type": "boolean", "default": False, "description": "Minimum orientation (~150 tokens): name, axioms, top 3 worldview topics, last diary mood. Lighter than slim."},
-            },
-            "required": ["query"],
-        },
-    ),
-    types.Tool(
-        name="hydrate_light",
-        description=(
-            "Lightweight session start: identity keys + last 2 diary entries only. "
-            "Use instead of hydrate() for short sessions or quick lookups where full "
-            "context reconstruction is not needed. Significantly fewer tokens than hydrate()."
-        ),
-        inputSchema={"type": "object", "properties": {}},
-    ),
-    types.Tool(
-        name="remember_batch",
-        description="Bulk-insert multiple memories.",
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "items": {"type": "array", "items": {"type": "object"}}
-            },
-            "required": ["items"],
-        },
-    ),
-    types.Tool(
-        name="remember_everywhere",
-        description=(
-            "Write a memory to BOTH NewMemSys AND Vestige in one call — the corpus callosum. "
-            "NewMemSys write always commits first. If Vestige fails, the NewMemSys memory is "
-            "preserved and a bridge_pending outbox row is queued for retry. "
-            "Returns: id, created_at, embedded, vestige_node_id, bridge_status."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "content":           {"type": "string", "description": "The memory content."},
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "remember", "recall", "recall_recent", "hydrate", "hydrate_light",
+                        "remember_batch", "remember_everywhere", "edit", "edit_batch", "delete",
+                    ],
+                    "default": "remember",
+                    "description": "Memory operation to perform.",
+                },
+                # remember / remember_everywhere
+                "content":           {"type": "string", "description": "Memory content (remember, remember_everywhere)."},
                 "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working","session_summary"], "default": "episodic"},
                 "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5},
                 "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0},
@@ -151,76 +77,24 @@ TOOLS = [
                 "half_life_hours":   {"type": "integer", "default": 720},
                 "tags":              {"type": "array", "items": {"type": "string"}, "default": []},
                 "context":           {"type": "object", "default": {}},
+                # recall / hydrate
+                "query":             {"type": "string", "description": "Search query (recall, hydrate)."},
+                "limit":             {"type": "integer", "default": 10},
+                "min_importance":    {"type": "number", "default": 0.3},
+                "max_importance":    {"type": "number", "default": 1.0},
+                "memory_type":       {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working","session_summary"]},
+                "fields":            {"type": "array", "items": {"type": "string"}},
+                "content_truncate":  {"type": "integer", "default": 0},
+                "slim":              {"type": "boolean", "default": False},
+                "brief":             {"type": "boolean", "default": False},
+                # edit / delete
+                "id":                {"type": "string", "description": "Memory UUID (edit, delete)."},
+                "status":            {"type": "string", "enum": ["active","expired","archived","deleted"]},
+                "hard":              {"type": "boolean", "default": False, "description": "Permanent delete (delete only)."},
+                # batch operations
+                "items":             {"type": "array", "items": {"type": "object"}, "description": "List of memory dicts (remember_batch, edit_batch)."},
             },
-            "required": ["content"],
-        },
-    ),
-    types.Tool(
-        name="edit",
-        description=(
-            "Partial update a memory. Only supplied fields change — everything else is preserved. "
-            "created_at is never touched. If content changes, the embedding is regenerated. "
-            "All fields except id are optional."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "id":               {"type": "string", "description": "UUID of the memory to edit."},
-                "content":          {"type": "string"},
-                "importance":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "description": "Float 0.0–1.0"},
-                "emotional_valence":{"type": "number", "minimum": -1.0, "maximum": 1.0, "description": "Float -1.0–1.0"},
-                "trust_level":      {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                "half_life_hours":  {"type": "integer"},
-                "tags":             {"type": "array", "items": {"type": "string"}},
-                "status":           {"type": "string", "enum": ["active","expired","archived","deleted"]},
-            },
-            "required": ["id"],
-        },
-    ),
-    types.Tool(
-        name="edit_batch",
-        description=(
-            "Bulk partial-update multiple memories in one call. "
-            "Each item must have 'id' plus any fields to change: "
-            "importance, emotional_valence, trust_level, half_life_hours, tags, status. "
-            "Ideal for valence/importance sweeps — fix 20-50 memories in one round-trip."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id":                {"type": "string"},
-                            "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0},
-                            "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "half_life_hours":   {"type": "integer"},
-                            "tags":              {"type": "array", "items": {"type": "string"}},
-                            "status":            {"type": "string"},
-                        },
-                        "required": ["id"],
-                    },
-                }
-            },
-            "required": ["items"],
-        },
-    ),
-    types.Tool(
-        name="delete",
-        description=(
-            "Delete a memory. Default is soft delete (status='deleted', row preserved). "
-            "Pass hard=true for permanent removal — use consent_check first for hard deletes."
-        ),
-        inputSchema={
-            "type": "object",
-            "properties": {
-                "id":   {"type": "string", "description": "UUID of the memory to delete."},
-                "hard": {"type": "boolean", "default": False, "description": "True = permanent. False (default) = soft delete."},
-            },
-            "required": ["id"],
+            "required": ["action"],
         },
     ),
     types.Tool(
@@ -676,16 +550,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
 async def _dispatch(name: str, args: dict) -> Any:
     match name:
-        case "remember":           return await mem_tools.remember(**args)
-        case "recall":             return await mem_tools.recall(**args)
-        case "recall_recent":      return await mem_tools.recall_recent(**args)
-        case "hydrate":            return await mem_tools.hydrate(**args)
-        case "hydrate_light":      return await mem_tools.hydrate_light()
-        case "remember_batch":     return await mem_tools.remember_batch(**args)
-        case "remember_everywhere": return await bridge_tools.remember_everywhere(**args)
-        case "edit":               return await mem_tools.edit(**args)
-        case "edit_batch":         return await mem_tools.edit_batch(**args)
-        case "delete":             return await mem_tools.delete(**args)
+        case "memory":             return await mem_tools.dispatch(**args)
         case "connect":            return await graph_tools.connect(**args)
         case "find_causes":        return await graph_tools.find_causes(**args)
         case "find_contradictions":return await graph_tools.find_contradictions(**args)

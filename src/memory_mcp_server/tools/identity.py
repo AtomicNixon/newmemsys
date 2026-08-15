@@ -1,10 +1,28 @@
 """Identity tools: get_identity, get_worldview, set_worldview, get_drives, get_goals."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from memory_mcp_server import database as db
 from memory_mcp_server.tools.memory import _row_to_dict
+
+
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for identity/worldview/drive/goal operations."""
+    action = (action or "get_identity").lower()
+    if action == "get_identity":
+        return await get_identity()
+    if action == "get_worldview":
+        return await get_worldview(**kwargs)
+    if action == "set_worldview":
+        return await set_worldview(**kwargs)
+    if action == "get_drives":
+        return await get_drives()
+    if action == "get_goals":
+        return await get_goals()
+    if action == "set_identity":
+        return await set_identity(**kwargs)
+    raise ValueError(f"Unknown identity action: {action}")
 
 
 async def get_identity() -> list[dict]:

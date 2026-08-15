@@ -1,8 +1,8 @@
-"""MCP tools: heartbeat_status, heartbeat_configure, heartbeat_pulse, heartbeat_diagnostic."""
+"""MCP tools: heartbeat dispatcher (status, configure, pulse, diagnostic, health)."""
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -21,6 +21,22 @@ FREQUENCY_HOURS = {
     "4x_daily": 6,
     "daily":    24,
 }
+
+
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for heartbeat and health operations."""
+    action = (action or "diagnostic").lower()
+    if action == "status":
+        return await heartbeat_status()
+    if action == "configure":
+        return await heartbeat_configure(**kwargs)
+    if action == "pulse":
+        return await heartbeat_pulse()
+    if action == "diagnostic":
+        return await heartbeat_diagnostic()
+    if action == "health":
+        return await health_tools.health()
+    raise ValueError(f"Unknown heartbeat action: {action}")
 
 
 async def heartbeat_status() -> dict:

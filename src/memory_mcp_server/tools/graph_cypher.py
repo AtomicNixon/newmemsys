@@ -8,7 +8,7 @@ handled automatically by graph_age.py.
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -16,6 +16,28 @@ from memory_mcp_server import database as db
 from memory_mcp_server import graph_age as age
 
 log = structlog.get_logger(__name__)
+
+
+async def dispatch(mode: str, **kwargs) -> Any:
+    """Unified dispatcher for AGE graph operations."""
+    mode = (mode or "find_causes_cypher").lower()
+    if mode == "find_causes_cypher":
+        return await find_causes_cypher(**kwargs)
+    if mode == "belief_support_cypher":
+        return await belief_support_cypher(**kwargs)
+    if mode == "contradiction_cluster_cypher":
+        return await contradiction_cluster_cypher(**kwargs)
+    if mode == "neighbourhood_cypher":
+        return await neighbourhood_cypher(**kwargs)
+    if mode == "path_between_cypher":
+        return await path_between_cypher(**kwargs)
+    if mode == "age_graph_status":
+        return await age_graph_status()
+    if mode == "sync_worldview":
+        return await sync_worldview()
+    if mode == "connect_belief":
+        return await connect_belief(**kwargs)
+    raise ValueError(f"Unknown graph_cypher mode: {mode}")
 
 
 async def find_causes_cypher(

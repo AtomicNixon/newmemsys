@@ -3,7 +3,7 @@ clustering.py — MCP tools for HDBSCAN cluster management (Phase 3)
 """
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 import structlog
 
@@ -11,6 +11,26 @@ from memory_mcp_server import database as db
 from memory_mcp_server import clustering as cl
 
 log = structlog.get_logger(__name__)
+
+
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for clustering operations."""
+    action = (action or "get").lower()
+    if action == "run":
+        return await run_clustering(**kwargs)
+    if action == "diagnostic":
+        return await clustering_diagnostic()
+    if action == "get":
+        return await get_clusters()
+    if action == "get_priority":
+        return await get_clusters_priority()
+    if action == "detail":
+        return await cluster_detail(**kwargs)
+    if action == "propose_action":
+        return await propose_cluster_action(**kwargs)
+    if action == "assign_memories":
+        return await assign_memories_to_cluster(**kwargs)
+    raise ValueError(f"Unknown clustering action: {action}")
 
 
 def _check_hdbscan() -> None:

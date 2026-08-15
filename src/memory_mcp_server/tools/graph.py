@@ -2,10 +2,26 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from memory_mcp_server import database as db
 from memory_mcp_server.tools.memory import _row_to_dict
+
+
+async def dispatch(mode: str, **kwargs) -> Any:
+    """Unified dispatcher for relational graph operations."""
+    mode = (mode or "connect").lower()
+    if mode == "connect":
+        return await connect(**kwargs)
+    if mode == "connect_batch":
+        return await connect_batch(**kwargs)
+    if mode == "disconnect":
+        return await disconnect_batch(**kwargs)
+    if mode == "find_causes":
+        return await find_causes(**kwargs)
+    if mode == "find_contradictions":
+        return await find_contradictions(**kwargs)
+    raise ValueError(f"Unknown graph mode: {mode}")
 
 
 async def connect(

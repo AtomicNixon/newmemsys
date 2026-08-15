@@ -1,10 +1,20 @@
 """Diary tools: write_diary, read_diary."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from memory_mcp_server import database as db
 from memory_mcp_server.tools.memory import _row_to_dict
+
+
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for diary operations."""
+    action = (action or "read").lower()
+    if action == "write":
+        return await write_diary(**kwargs)
+    if action == "read":
+        return await read_diary(**kwargs)
+    raise ValueError(f"Unknown diary action: {action}")
 
 
 async def write_diary(mood: str, entry: str, date: Optional[str] = None) -> dict:

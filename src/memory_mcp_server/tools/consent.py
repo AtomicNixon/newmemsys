@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from memory_mcp_server import database as db
 from memory_mcp_server.tools.memory import _row_to_dict
@@ -10,6 +11,18 @@ from memory_mcp_server.tools.memory import _row_to_dict
 BRIDGE_ACTIONS = {"bridge_import", "bridge_export", "bridge_pending"}
 GRAPH_ACTIONS = {"graph_edge_candidate"}
 POSTCOMPACT_ACTIONS = {"postcompact_summary"}
+
+
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for consent operations."""
+    action = (action or "list").lower()
+    if action == "check":
+        return await consent_check(**kwargs)
+    if action == "list":
+        return await list_pending_consent()
+    if action == "resolve":
+        return await resolve_consent(**kwargs)
+    raise ValueError(f"Unknown consent action: {action}")
 
 
 async def _find_matching_worldviews(topic_hints: list[str]) -> list[dict]:

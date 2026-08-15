@@ -432,6 +432,37 @@ async def delete(id: str, hard: bool = False) -> dict:
         return {"id": id, "deleted": False, "message": "Not found or already deleted"}
 
 
+async def dispatch(action: str, **kwargs) -> Any:
+    """Unified dispatcher for all memory operations.
+
+    Replaces the individual remember/recall/hydrate/edit/delete tools with a
+    single `memory` MCP tool using `action` to select the operation.
+    """
+    action = (action or "remember").lower()
+    if action == "remember":
+        return await remember(**kwargs)
+    if action == "recall":
+        return await recall(**kwargs)
+    if action == "recall_recent":
+        return await recall_recent(**kwargs)
+    if action == "hydrate":
+        return await hydrate(**kwargs)
+    if action == "hydrate_light":
+        return await hydrate_light()
+    if action == "remember_batch":
+        return await remember_batch(**kwargs)
+    if action == "remember_everywhere":
+        from memory_mcp_server.tools.bridge import remember_everywhere
+        return await remember_everywhere(**kwargs)
+    if action == "edit":
+        return await edit(**kwargs)
+    if action == "edit_batch":
+        return await edit_batch(**kwargs)
+    if action == "delete":
+        return await delete(**kwargs)
+    raise ValueError(f"Unknown memory action: {action}")
+
+
 def _row_to_dict(row) -> dict:
     d = dict(row)
     for k, v in d.items():
