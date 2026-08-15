@@ -55,7 +55,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "content":           {"type": "string", "description": "The memory content."},
-                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"], "default": "episodic"},
+                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working","session_summary"], "default": "episodic"},
                 "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5, "description": "Float 0.0 (trivial) to 1.0 (critical). Never send integers > 1."},
                 "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0, "description": "Float -1.0 (negative) to 1.0 (positive)."},
                 "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.8, "description": "Float 0.0 (untrusted) to 1.0 (fully trusted)."},
@@ -143,7 +143,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "content":           {"type": "string", "description": "The memory content."},
-                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working"], "default": "episodic"},
+                "type":              {"type": "string", "enum": ["episodic","semantic","procedural","strategic","working","session_summary"], "default": "episodic"},
                 "importance":        {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.5},
                 "emotional_valence": {"type": "number", "minimum": -1.0, "maximum": 1.0, "default": 0.0},
                 "trust_level":       {"type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.8},

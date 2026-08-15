@@ -9,6 +9,22 @@ from memory_mcp_server.tools.memory import _row_to_dict
 
 BRIDGE_ACTIONS = {"bridge_import", "bridge_export", "bridge_pending"}
 GRAPH_ACTIONS = {"graph_edge_candidate"}
+POSTCOMPACT_ACTIONS = {"postcompact_summary"}
+
+
+async def _find_matching_worldviews(topic_hints: list[str]) -> list[dict]:
+    """Return worldview rows whose topics overlap with the given hints."""
+    if not topic_hints:
+        return []
+    patterns = [f"%{h.lower()}%" for h in topic_hints if len(h) >= 4]
+    if not patterns:
+        return []
+    conditions = " OR ".join(
+        f"topic ILIKE ${i + 1}"
+        for i in range(len(patterns))
+    )
+    sql = f"SELECT id, topic FROM worldview WHERE {conditions} LIMIT 10"
+    return await db.fetch(sql, *patterns)
 
 
 async def consent_check(
@@ -112,5 +128,59 @@ async def resolve_consent(outbox_id: str, decision: str) -> dict:
                 }
         except Exception as e:
             result["graph"] = {"error": str(e), "note": "outbox marked approved; edge creation failed"}
+
+    # Execute postcompact summary actions when approved or rejected
+    if action in POSTCOMPACT_ACTIONS:
+        memory_id = payload.get("memory_id")
+        topic_hints = payload.get("topic_hints") or []
+        try:
+            if decision == "approved":
+                if memory_id:
+                    # Raise importance so the summary survives decay longer.
+                    await db.execute(
+                        "UPDATE memories SET importance = GREATEST(importance, 0.5) WHERE id = $1::uuid",
+                        memory_id,
+                    )
+
+                # Link to relevant WorldView beliefs in AGE.
+                linked = []
+                if memory_id and topic_hints:
+                    from memory_mcp_server.tools.graph_cypher import connect_belief
+                    matches = await _find_matching_worldviews(topic_hints)
+                    for wv in matches:
+                        link_result = await connect_belief(
+                            memory_id=memory_id,
+                            worldview_id=str(wv["id"]),
+                            confidence=0.75,
+                            context="linked from postcompact summary approval",
+                        )
+                        if link_result.get("success"):
+                            linked.append({"worldview_id": str(wv["id"]), "topic": wv["topic"]})
+
+                # Write a diary entry for texture/mood.
+                preview = payload.get("summary_preview", "")[:200]
+                from memory_mcp_server.tools.diary import write_diary
+                await write_diary(
+                    entry=(
+                        f"Session summary approved and indexed. "
+                        f"Preview: {preview}... "
+                        f"Linked to {len(linked)} worldview belief(s)."
+                    ),
+                    mood="resolved",
+                )
+                result["postcompact"] = {
+                    "memory_id": memory_id,
+                    "linked_worldviews": linked,
+                    "diary_written": True,
+                }
+
+            elif decision == "rejected" and memory_id:
+                await db.execute(
+                    "UPDATE memories SET status = 'archived', updated_at = NOW() WHERE id = $1::uuid",
+                    memory_id,
+                )
+                result["postcompact"] = {"memory_id": memory_id, "archived": True}
+        except Exception as e:
+            result["postcompact"] = {"error": str(e), "note": f"outbox marked {decision}; postcompact action failed"}
 
     return result

@@ -223,7 +223,7 @@ async def hydrate(query: str, limit: int = 10, slim: bool = False, brief: bool =
 
 
 async def hydrate_light() -> dict:
-    """Lightweight session start: identity keys + last 2 diary entries only.
+    """Lightweight session start: identity keys + last 2 diary entries + pending consent drain reminder.
 
     Use instead of hydrate() when full context reconstruction is not needed —
     short sessions, quick lookups, or when you already know the context.
@@ -245,12 +245,37 @@ async def hydrate_light() -> dict:
         if hasattr(d.get("date"), "isoformat"):
             d["date"] = d["date"].isoformat()
 
-    return {
+    # Surface pending postcompact_summary items by preview so skipping review
+    # is a conscious act, not a missed count.
+    pending = await pool.fetch(
+        """SELECT id, payload->>'summary_preview' AS preview, created_at
+           FROM outbox
+           WHERE action = 'postcompact_summary' AND status = 'pending'
+           ORDER BY created_at"""
+    )
+    pending_summaries = [
+        {
+            "outbox_id": str(row["id"]),
+            "preview": (row["preview"] or "")[:200],
+            "created_at": str(row["created_at"]),
+        }
+        for row in pending
+    ]
+
+    result: dict = {
         "identity": identity,
         "recent_diary": diary,
-        "note": "Light hydration — identity + last 2 diary entries. "
-                "Call hydrate(query) for full context including memories.",
     }
+    if pending_summaries:
+        result["pending_postcompact_summaries"] = pending_summaries
+        result["note"] = (
+            "Light hydration + pending postcompact summaries require review. "
+            "Call list_pending_consent() to approve/reject, or hydrate(query) for full context."
+        )
+    else:
+        result["note"] = "Light hydration — identity + last 2 diary entries. " \
+                         "Call hydrate(query) for full context including memories."
+    return result
 
 
 async def remember_batch(items: list[dict]) -> list[dict]:
