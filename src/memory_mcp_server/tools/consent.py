@@ -41,7 +41,6 @@ async def _find_matching_worldviews(topic_hints: list[str]) -> list[dict]:
 
 
 async def consent_check(
-    action: str,
     payload: dict,
     ai_reason: str,
 ) -> dict:
@@ -51,8 +50,11 @@ async def consent_check(
     The AI can refuse or flag any memory modification before it executes.
     Status starts as 'pending' — human must approve or reject.
 
+    The action type is read from payload["action"].
+
     Returns the outbox record so the caller knows it is queued.
     """
+    action = payload.get("action", "unknown")
     row = await db.fetchrow(
         """INSERT INTO outbox (action, payload, ai_reason, status)
            VALUES ($1, $2::jsonb, $3, 'pending')

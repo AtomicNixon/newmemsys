@@ -65,7 +65,8 @@ async def main():
     async with mcp_session() as session:
         memory = await call_tool(
             session,
-            "remember",
+            "memory",
+            action="remember",
             content=content,
             type="session_summary",
             importance=args.importance,
@@ -84,9 +85,10 @@ async def main():
 
         await call_tool(
             session,
-            "consent_check",
-            action="postcompact_summary",
+            "consent",
+            action="check",
             payload={
+                "action": "postcompact_summary",
                 "memory_id": memory_id,
                 "topic_hints": topic_hints,
                 "section_keys": ["session_end"],

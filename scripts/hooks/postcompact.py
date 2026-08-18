@@ -36,18 +36,56 @@ def _truncate(text: str, max_len: int = SUMMARY_MAX_CHARS) -> str:
 
 
 def _read_compact_summary() -> dict:
-    """Read the compact summary JSON from stdin."""
+    """Read the compact summary from stdin.
+
+    Claude Code pipes hook-invocation JSON (session_id, transcript_path,
+    hook_event_name, trigger, ...) to stdin, NOT the actual compaction
+    summary text. The real summary lives in the transcript file or in a
+    dedicated field. We try multiple extraction strategies.
+    """
     payload = sys.stdin.read()
     if not payload.strip():
         return {"raw": "", "sections": {}}
+
     try:
         data = json.loads(payload)
     except json.JSONDecodeError:
-        # Claude may send plain text; treat it as a single section.
+        # Plain text — treat it as a single section.
         data = {"raw": payload, "sections": {"summary": payload}}
 
     if isinstance(data, str):
         data = {"raw": data, "sections": {"summary": data}}
+
+    # If this looks like hook-invocation metadata, try to find the real summary.
+    hook_fields = {"session_id", "transcript_path", "hook_event_name", "trigger", "prompt_id", "users"}
+    if isinstance(data, dict) and hook_fields.intersection(data.keys()):
+        # Strategy 1: look for a nested summary field.
+        for key in ("summary", "compact_summary", "additional_instructions", "context"):
+            if key in data and isinstance(data[key], str) and len(data[key]) > 50:
+                data = {"raw": data[key], "sections": {"summary": data[key]}}
+                break
+        else:
+            # Strategy 2: read the transcript file and extract the last assistant turn.
+            transcript_path = data.get("transcript_path")
+            if transcript_path and os.path.isfile(transcript_path):
+                try:
+                    with open(transcript_path, "r", encoding="utf-8", errors="replace") as f:
+                        lines = f.readlines()
+                    # Walk backwards for the last assistant text block.
+                    for line in reversed(lines):
+                        try:
+                            entry = json.loads(line)
+                        except Exception:
+                            continue
+                        if entry.get("type") == "assistant":
+                            content = entry.get("message", {}).get("content", [])
+                            texts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
+                            text = "\n".join(t for t in texts if t).strip()
+                            if text:
+                                data = {"raw": text, "sections": {"summary": text}}
+                                break
+                except Exception:
+                    pass
 
     sections = data.get("sections") or {}
     if not sections and data:
@@ -122,7 +160,8 @@ async def main():
     async with mcp_session() as session:
         memory = await call_tool(
             session,
-            "remember",
+            "memory",
+            action="remember",
             content=content,
             type="session_summary",
             importance=args.importance,
@@ -142,9 +181,10 @@ async def main():
 
         await call_tool(
             session,
-            "consent_check",
-            action="postcompact_summary",
+            "consent",
+            action="check",
             payload={
+                "action": "postcompact_summary",
                 "memory_id": memory_id,
                 "topic_hints": topic_hints,
                 "section_keys": list(summary.get("sections", {}).keys()),

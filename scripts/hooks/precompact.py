@@ -102,9 +102,9 @@ async def main():
     context = _read_hook_context()
 
     async with mcp_session() as session:
-        memories = await call_tool(session, "recall_recent", limit=args.max_memories)
-        drives = await call_tool(session, "get_drives")
-        goals = await call_tool(session, "get_goals")
+        memories = await call_tool(session, "memory", action="recall_recent", limit=args.max_memories)
+        drives = await call_tool(session, "identity", action="get_drives")
+        goals = await call_tool(session, "identity", action="get_goals")
 
     # Flatten results — MCP text payloads are JSON strings; recall_recent returns a list.
     if isinstance(memories, str):
@@ -120,6 +120,8 @@ async def main():
 
     candidates = []
     for m in memories:
+        if not isinstance(m, dict):
+            continue
         candidates.append({
             "kind": "memory",
             "id": m.get("id"),
@@ -127,16 +129,20 @@ async def main():
             "score": _score(m),
         })
     for d in drives:
+        if not isinstance(d, dict):
+            continue
         candidates.append({
             "kind": "drive",
-            "id": d.get("name"),
+            "id": d.get("concept") or d.get("name"),
             "text": _preview(d.get("description", "")),
             "score": _score(d),
         })
     for g in goals:
+        if not isinstance(g, dict):
+            continue
         candidates.append({
             "kind": "goal",
-            "id": g.get("name"),
+            "id": g.get("title") or g.get("name"),
             "text": _preview(g.get("description", "")),
             "score": _score(g),
         })
