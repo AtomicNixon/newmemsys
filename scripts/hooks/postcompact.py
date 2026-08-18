@@ -134,8 +134,18 @@ def _build_summary_text(summary: dict) -> str:
     return "\n".join(lines)
 
 
-def _extract_topic_hints(summary: dict) -> list[str]:
-    """Pull likely WorldView topic keywords from the summary for later graph linking."""
+def _extract_topic_hints(summary: dict, session_id: str = "") -> list[str]:
+    """Pull likely WorldView topic keywords from the summary for later graph linking.
+
+    Checks the session_topic_flags store first. If Bob flagged anything this
+    session, those tags become the topic_hints (full stop). Only falls back
+    to the blind word-walk if nothing was flagged.
+    """
+    if session_id:
+        # This is synchronous — we can't call async MCP from here.
+        # The hook will call get_session_flags via MCP before calling this.
+        pass
+
     text = summary.get("raw", "")
     words = re.findall(r"[A-Za-z_]{4,}", text.lower())
     # Deduplicate preserving order.
@@ -155,7 +165,29 @@ async def main():
 
     summary = _read_compact_summary()
     content = _build_summary_text(summary)
-    topic_hints = _extract_topic_hints(summary)
+
+    # Extract session_id from hook-invocation JSON if present
+    session_id = ""
+    raw_payload = summary.get("raw", "")
+    try:
+        hook_data = json.loads(raw_payload) if raw_payload.strip().startswith("{") else {}
+        session_id = hook_data.get("session_id", "")
+    except Exception:
+        pass
+
+    # Check for Bob-flagged topics first
+    topic_hints: list[str] = []
+    if session_id:
+        async with mcp_session() as session:
+            flags = await call_tool(session, "memory", action="get_session_flags", session_id=session_id)
+            if isinstance(flags, dict) and flags.get("tags"):
+                topic_hints = flags["tags"]
+                # Clear the flags now that we've consumed them
+                await call_tool(session, "memory", action="clear_session_flags", session_id=session_id)
+
+    # Fall back to naive extraction only if Bob didn't flag anything
+    if not topic_hints:
+        topic_hints = _extract_topic_hints(summary)
 
     async with mcp_session() as session:
         memory = await call_tool(
@@ -201,6 +233,7 @@ async def main():
         "memory_id": memory_id,
         "status": "queued",
         "topic_hints": topic_hints,
+        "flagged_by_bob": bool(session_id and topic_hints and topic_hints != _extract_topic_hints(summary)),
     }, indent=2))
 
 

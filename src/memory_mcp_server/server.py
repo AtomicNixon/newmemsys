@@ -62,6 +62,7 @@ TOOLS = [
                     "enum": [
                         "remember", "recall", "recall_recent", "hydrate", "hydrate_light",
                         "remember_batch", "remember_everywhere", "edit", "edit_batch", "delete",
+                        "flag_topic", "get_session_flags", "clear_session_flags",
                     ],
                     "default": "remember",
                     "description": "Memory operation to perform.",
@@ -92,6 +93,9 @@ TOOLS = [
                 "hard":              {"type": "boolean", "default": False, "description": "Permanent delete (delete only)."},
                 # batch operations
                 "items":             {"type": "array", "items": {"type": "object"}, "description": "List of memory dicts (remember_batch, edit_batch)."},
+                # session topic flags
+                "session_id":        {"type": "string", "description": "Session ID for flag_topic/get_session_flags/clear_session_flags."},
+                "note":              {"type": "string", "description": "Optional note for flag_topic."},
             },
             "required": ["action"],
         },

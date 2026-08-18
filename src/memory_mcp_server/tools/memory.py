@@ -432,6 +432,61 @@ async def delete(id: str, hard: bool = False) -> dict:
         return {"id": id, "deleted": False, "message": "Not found or already deleted"}
 
 
+# ---------------------------------------------------------------------------
+# Session topic flags — Bob flags what should survive compaction
+# ---------------------------------------------------------------------------
+
+async def flag_topic(
+    session_id: str,
+    tags: list[str],
+    note: str = "",
+) -> dict:
+    """Flag topics that should survive compaction for this session.
+
+    Writes to a session-scoped store that postcompact.py reads before
+    falling back to naive extraction.
+    """
+    if not session_id:
+        return {"error": "session_id is required"}
+    if not tags:
+        return {"error": "tags list is required"}
+
+    # Upsert: merge with existing tags for this session
+    row = await db.fetchrow(
+        """INSERT INTO session_topic_flags (session_id, tags, note, updated_at)
+           VALUES ($1, $2::jsonb, $3, NOW())
+           ON CONFLICT (session_id)
+           DO UPDATE SET
+               tags = session_topic_flags.tags || $2::jsonb,
+               note = COALESCE($3, session_topic_flags.note),
+               updated_at = NOW()
+           RETURNING session_id, tags, note, updated_at""",
+        session_id, json.dumps(tags), note or None,
+    )
+    return _row_to_dict(row)
+
+
+async def get_session_flags(session_id: str) -> dict:
+    """Retrieve flagged topics for a session (used by postcompact hook)."""
+    row = await db.fetchrow(
+        "SELECT session_id, tags, note, updated_at FROM session_topic_flags WHERE session_id = $1",
+        session_id,
+    )
+    if not row:
+        return {"session_id": session_id, "tags": [], "note": None}
+    return _row_to_dict(row)
+
+
+async def clear_session_flags(session_id: str) -> dict:
+    """Clear flagged topics for a session after postcompact consumes them."""
+    result = await db.execute(
+        "DELETE FROM session_topic_flags WHERE session_id = $1",
+        session_id,
+    )
+    deleted = result.endswith("1")
+    return {"session_id": session_id, "cleared": deleted}
+
+
 async def dispatch(action: str, **kwargs) -> Any:
     """Unified dispatcher for all memory operations.
 
@@ -460,6 +515,12 @@ async def dispatch(action: str, **kwargs) -> Any:
         return await edit_batch(**kwargs)
     if action == "delete":
         return await delete(**kwargs)
+    if action == "flag_topic":
+        return await flag_topic(**kwargs)
+    if action == "get_session_flags":
+        return await get_session_flags(**kwargs)
+    if action == "clear_session_flags":
+        return await clear_session_flags(**kwargs)
     raise ValueError(f"Unknown memory action: {action}")
 
 
